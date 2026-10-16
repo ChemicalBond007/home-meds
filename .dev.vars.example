@@ -1,0 +1,7 @@
+APP_ENC_KEY=
+VAPID_PRIVATE_KEY=
+# Only used by probe:ai, never bundled into the browser.
+LLM_BASE_URL=https://claw.shu.edu.cn/api
+LLM_API_KEY=
+LLM_MODEL=qwen3.5-27b
+TAVILY_API_KEY=
