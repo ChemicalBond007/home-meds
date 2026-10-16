@@ -2,7 +2,7 @@ import { useState } from 'react';
 import { startAuthentication, startRegistration } from '@simplewebauthn/browser';
 import type { PublicKeyCredentialRequestOptionsJSON, PublicKeyCredentialCreationOptionsJSON } from '@simplewebauthn/browser';
 import { api } from './api';
-import { Message, errorText, Icon } from './components';
+import { Message, errorText, Icon, useLoad } from './components';
 export function Login({ done }: { done: () => void }) {
   const [mode, setMode] = useState<'login' | 'register' | 'admin'>('login');
   const [name, setName] = useState(''), [secret, setSecret] = useState(''), [code, setCode] = useState(''), [join, setJoin] = useState('');
@@ -42,23 +42,27 @@ export function Login({ done }: { done: () => void }) {
     </section>
   </main>;
 }
+function RecoveryList({ codes, note, action, done }: { codes: string[]; note: string; action: string; done: () => void }) {
+  return <><Message warning>{note}</Message>
+    <ol className="recovery">{codes.map(c => <li key={c}><code>{c}</code></li>)}</ol>
+    <button onClick={done}>{action}</button></>;
+}
 export function Security({ done, bindingOnly = false }: { done: () => void; bindingOnly?: boolean }) {
   const [secret, setSecret] = useState(''), [uri, setUri] = useState(''), [code, setCode] = useState('');
   const [codes, setCodes] = useState<string[]>(), [error, setError] = useState(''), [busy, setBusy] = useState(false), [success, setSuccess] = useState('');
+  const [factors, setFactors] = useState(0);
   const bind = async (work: () => Promise<{ recovery_codes?: string[] }>) => {
     setBusy(true); setError('');
     try {
       const r = await work();
       if (r.recovery_codes) setCodes(r.recovery_codes);
-      else setSuccess('绑定成功');
+      else { setSuccess('绑定成功'); setFactors(n => n + 1); }
     } catch (e) { setError(errorText(e)); } finally { setBusy(false); }
   };
-  return <section className="panel"><h2>{bindingOnly ? '请先保护管理员账号' : '管理员安全设置'}</h2>
+  return <><section className="panel"><h2>{bindingOnly ? '请先保护管理员账号' : '管理员安全设置'}</h2>
     <p>绑定通行密钥或验证器后才能管理。恢复码只显示一次，请安全离线保存。</p>
     {error && <Message warning>{error}</Message>}{success && <Message>{success}</Message>}
-    {codes ? <><Message warning>临时密码和旧恢复码已失效。下面 10 个恢复码每个只能用一次。</Message>
-      <ol className="recovery">{codes.map(c => <li key={c}><code>{c}</code></li>)}</ol>
-      <button onClick={done}>我已安全保存，继续</button></> : <>
+    {codes ? <RecoveryList codes={codes} note="临时密码和旧恢复码已失效。下面 10 个恢复码每个只能用一次。" action="我已安全保存，继续" done={done} /> : <>
       <button disabled={busy} onClick={() => void bind(async () => {
         const d = await api<{ id: string; options: PublicKeyCredentialCreationOptionsJSON }>('/auth/passkey/register/options', 'POST', {});
         return api('/auth/passkey/register', 'POST', { id: d.id, response: await startRegistration({ optionsJSON: d.options }) });
@@ -73,5 +77,33 @@ export function Security({ done, bindingOnly = false }: { done: () => void; bind
         <button disabled={busy}>验证并完成绑定</button>
       </form>}
     </>}
+  </section>{!bindingOnly && <RecoveryCodes version={factors} />}</>;
+}
+function RecoveryCodes({ version }: { version: number }) {
+  const status = useLoad<{ remaining: number; totp: boolean; passkeys: number }>('/auth/recovery', version);
+  const [code, setCode] = useState(''), [codes, setCodes] = useState<string[]>(), [error, setError] = useState(''), [busy, setBusy] = useState(false);
+  const regenerate = async (proof: () => Promise<object>) => {
+    setBusy(true); setError('');
+    try {
+      const r = await api<{ recovery_codes: string[] }>('/auth/recovery/regenerate', 'POST', await proof());
+      setCode(''); setCodes(r.recovery_codes);
+    } catch (e) { setError(errorText(e)); } finally { setBusy(false); }
+  };
+  const s = status.data;
+  return <section className="panel"><h2>恢复码</h2>
+    {codes ? <RecoveryList codes={codes} note="旧恢复码已全部失效。下面 10 个新恢复码每个只能用一次，只显示这一次，请安全离线保存。" action="我已安全保存"
+      done={() => { setCodes(undefined); status.reload(); }} />
+      : !s ? <Message warning={!!status.error}>{status.error || '正在读取恢复码状态…'}</Message> : <>
+        <p>当前有 {s.remaining} 个未使用的恢复码。恢复码丢失或可能被他人看到时，可以重新生成一组，旧恢复码会立即全部失效。生成前需要再次验证身份。</p>
+        {error && <Message warning>{error}</Message>}
+        {s.passkeys > 0 && <button disabled={busy} onClick={() => void regenerate(async () => {
+          const d = await api<{ id: string; options: PublicKeyCredentialRequestOptionsJSON }>('/auth/recovery/passkey/options', 'POST', {});
+          return { id: d.id, response: await startAuthentication({ optionsJSON: d.options }) };
+        })}>用通行密钥验证并重新生成</button>}
+        {s.totp && <form onSubmit={e => { e.preventDefault(); void regenerate(async () => ({ code })); }}>
+          <label>验证器当前 6 位验证码<input inputMode="numeric" autoComplete="one-time-code" value={code} onChange={e => setCode(e.target.value)} pattern="[0-9]{6}" maxLength={6} required /></label>
+          <button className={s.passkeys > 0 ? 'secondary' : ''} disabled={busy}>验证并重新生成</button>
+        </form>}
+      </>}
   </section>;
 }

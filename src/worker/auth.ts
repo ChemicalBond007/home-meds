@@ -13,6 +13,7 @@ import type { User } from '../shared/types';
 
 const username = z.string().trim().min(2).max(40).regex(/^[\p{L}\p{N}_-]+$/u, '仅支持文字、数字、下划线和短横线');
 const credentials = z.object({ username, secret: z.string().max(300).optional(), code: z.string().max(10).optional() });
+const assertion = z.object({ id: z.string(), response: z.custom<AuthenticationResponseJSON>(x => typeof (x as { id?: unknown } | null)?.id === 'string') });
 const cookieName = 'hm_session';
 export const auth = new Hono<AppEnv>();
 
@@ -25,6 +26,39 @@ export async function session(c: Ctx, userId: string, bindingOnly = false) {
     httpOnly: true, secure: new URL(c.req.url).protocol === 'https:', sameSite: 'Strict', path: '/',
     maxAge: bindingOnly ? 1800 : 365 * 86400,
   });
+}
+type Totp = { user_id: string; encrypted_secret: string; last_step: number };
+const verifiedTotp = (c: Ctx, userId: string) => c.env.DB.prepare('SELECT user_id,encrypted_secret,last_step FROM totp_secrets WHERE user_id=? AND verified=1')
+  .bind(userId).first<Totp>();
+async function consumeTotp(c: Ctx, t: Totp, code: string) {
+  const step = await checkTotp(await decrypt(c.env.APP_ENC_KEY, 'totp', t.encrypted_secret), code, t.last_step);
+  if (step === null) fail(401, '验证码无效或已使用');
+  const changed = await c.env.DB.prepare('UPDATE totp_secrets SET last_step=? WHERE user_id=? AND last_step<?')
+    .bind(step, t.user_id, step).run();
+  if (!changed.meta.changes) fail(401, '验证码已使用');
+}
+const passkeyIds = async (c: Ctx, userId: string) => (await c.env.DB.prepare('SELECT id FROM webauthn_credentials WHERE user_id=?')
+  .bind(userId).all<{ id: string }>()).results.map(x => x.id);
+async function passkeyChallenge(c: Ctx, userId: string, ids: string[], sessionHash: string | null) {
+  const options = await generateAuthenticationOptions({
+    rpID: new URL(c.req.url).hostname, userVerification: 'required', allowCredentials: ids.map(id => ({ id })),
+  });
+  const id = randomToken();
+  await c.env.DB.prepare("INSERT INTO auth_challenges(id,user_id,kind,challenge,session_hash,expires_at) VALUES(?,?,'authenticate',?,?,?)")
+    .bind(id, userId, options.challenge, sessionHash, Date.now() + 300000).run();
+  return { id, options };
+}
+async function checkPasskey(c: Ctx, userId: string, challenge: string, response: AuthenticationResponseJSON) {
+  const cred = await c.env.DB.prepare('SELECT * FROM webauthn_credentials WHERE id=? AND user_id=?').bind(response.id, userId)
+    .first<{ id: string; public_key: string; counter: number }>();
+  if (!cred) fail(401, '通行密钥无效');
+  const result = await verifyAuthenticationResponse({
+    response, expectedChallenge: challenge, expectedOrigin: new URL(c.req.url).origin,
+    expectedRPID: new URL(c.req.url).hostname, requireUserVerification: true,
+    credential: { id: cred.id, publicKey: unb64(cred.public_key), counter: cred.counter },
+  }).catch(() => null);
+  if (!result?.verified) fail(401, '通行密钥无效');
+  return c.env.DB.prepare('UPDATE webauthn_credentials SET counter=? WHERE id=?').bind(result.authenticationInfo.newCounter, cred.id);
 }
 auth.use('*', async (c, next) => {
   if (!['GET', 'HEAD', 'OPTIONS'].includes(c.req.method)) {
@@ -89,14 +123,9 @@ auth.post('/auth/login', async c => {
     await session(c, u.id, true);
     return c.json({ ok: true, binding_only: true });
   }
-  const t = await c.env.DB.prepare('SELECT * FROM totp_secrets WHERE user_id=? AND verified=1').bind(u.id)
-    .first<{ encrypted_secret: string; last_step: number }>();
+  const t = await verifiedTotp(c, u.id);
   if (!t || !data.code) fail(401, '请使用验证器、通行密钥或一次性凭证');
-  const step = await checkTotp(await decrypt(c.env.APP_ENC_KEY, 'totp', t.encrypted_secret), data.code, t.last_step);
-  if (step === null) fail(401, '验证码无效或已使用');
-  const changed = await c.env.DB.prepare('UPDATE totp_secrets SET last_step=? WHERE user_id=? AND last_step<?')
-    .bind(step, u.id, step).run();
-  if (!changed.meta.changes) fail(401, '验证码已使用');
+  await consumeTotp(c, t, data.code);
   await session(c, u.id);
   return c.json({ ok: true });
 });
@@ -147,11 +176,10 @@ auth.post('/auth/totp/bind', async c => {
 auth.post('/auth/passkey/register/options', async c => {
   admin(c);
   const u = c.get('user');
-  const old = await c.env.DB.prepare('SELECT id FROM webauthn_credentials WHERE user_id=?').bind(u.id).all<{ id: string }>();
   const options = await generateRegistrationOptions({
     rpName: '家药箱', rpID: new URL(c.req.url).hostname,
     userName: u.username, userID: new TextEncoder().encode(u.id),
-    attestationType: 'none', excludeCredentials: old.results.map(x => ({ id: x.id })),
+    attestationType: 'none', excludeCredentials: (await passkeyIds(c, u.id)).map(id => ({ id })),
     supportedAlgorithmIDs: [-7, -257],
     authenticatorSelection: { residentKey: 'preferred', userVerification: 'required' },
   });
@@ -180,32 +208,58 @@ auth.post('/auth/passkey/options', async c => {
   await limit(c.env.DB, `passkey:${c.req.header('CF-Connecting-IP') || 'local'}`, 30, 600);
   const u = await c.env.DB.prepare("SELECT * FROM users WHERE username=? AND role='admin'").bind(data.username).first<User>();
   if (!u) fail(401, '无法使用通行密钥');
-  const creds = await c.env.DB.prepare('SELECT id FROM webauthn_credentials WHERE user_id=?').bind(u.id).all<{ id: string }>();
-  const options = await generateAuthenticationOptions({
-    rpID: new URL(c.req.url).hostname, userVerification: 'required', allowCredentials: creds.results.map(x => ({ id: x.id })),
-  });
-  const id = randomToken();
-  await c.env.DB.prepare("INSERT INTO auth_challenges(id,user_id,kind,challenge,expires_at) VALUES(?,?,'authenticate',?,?)")
-    .bind(id, u.id, options.challenge, Date.now() + 300000).run();
-  return c.json({ id, options });
+  return c.json(await passkeyChallenge(c, u.id, await passkeyIds(c, u.id), null));
 });
 auth.post('/auth/passkey/login', async c => {
-  const { id, response } = await json(c, z.object({ id: z.string(), response: z.custom<AuthenticationResponseJSON>(x => !!x && typeof x === 'object') }));
-  const ch = await c.env.DB.prepare(`DELETE FROM auth_challenges WHERE id=? AND kind='authenticate' AND expires_at>? RETURNING *`)
-    .bind(id, Date.now()).first<{ user_id: string; challenge: string }>();
+  const { id, response } = await json(c, assertion);
+  // Challenges bound to a session are step-up proofs for that session and must never mint a new one.
+  const ch = await c.env.DB.prepare(`DELETE FROM auth_challenges WHERE id=? AND kind='authenticate' AND session_hash IS NULL
+    AND expires_at>? RETURNING user_id,challenge`).bind(id, Date.now()).first<{ user_id: string; challenge: string }>();
   if (!ch) fail(401, '验证已过期');
-  const cred = await c.env.DB.prepare('SELECT * FROM webauthn_credentials WHERE id=? AND user_id=?').bind(response.id, ch.user_id)
-    .first<{ id: string; public_key: string; counter: number }>();
-  if (!cred) fail(401, '通行密钥无效');
-  const result = await verifyAuthenticationResponse({
-    response, expectedChallenge: ch.challenge, expectedOrigin: new URL(c.req.url).origin,
-    expectedRPID: new URL(c.req.url).hostname, requireUserVerification: true,
-    credential: { id: cred.id, publicKey: unb64(cred.public_key), counter: cred.counter },
-  }).catch(() => null);
-  if (!result?.verified) fail(401, '通行密钥无效');
-  await c.env.DB.prepare('UPDATE webauthn_credentials SET counter=? WHERE id=?').bind(result.authenticationInfo.newCounter, cred.id).run();
+  await (await checkPasskey(c, ch.user_id, ch.challenge, response)).run();
   await session(c, ch.user_id);
   return c.json({ ok: true });
+});
+auth.get('/auth/recovery', async c => {
+  admin(c);
+  const id = c.get('user').id;
+  const r = (await c.env.DB.prepare(`SELECT
+      (SELECT COUNT(*) FROM one_time_secrets WHERE user_id=? AND kind='recovery' AND used_at IS NULL AND expires_at>?) AS remaining,
+      EXISTS(SELECT 1 FROM totp_secrets WHERE user_id=? AND verified=1) AS totp,
+      (SELECT COUNT(*) FROM webauthn_credentials WHERE user_id=?) AS passkeys`)
+    .bind(id, Date.now(), id, id).first<{ remaining: number; totp: number; passkeys: number }>())!;
+  return c.json({ remaining: r.remaining, totp: !!r.totp, passkeys: r.passkeys });
+});
+auth.post('/auth/recovery/passkey/options', async c => {
+  admin(c);
+  const u = c.get('user'), ids = await passkeyIds(c, u.id);
+  if (!ids.length) fail(400, '尚未绑定通行密钥');
+  return c.json(await passkeyChallenge(c, u.id, ids, c.get('session').token_hash));
+});
+auth.post('/auth/recovery/regenerate', async c => {
+  admin(c);
+  const u = c.get('user');
+  const proof = await json(c, z.union([z.object({ code: z.string().regex(/^\d{6}$/) }), assertion]));
+  await limit(c.env.DB, `reauth:${u.id}`, 10, 600);
+  const statements: D1PreparedStatement[] = [];
+  if ('code' in proof) {
+    const t = await verifiedTotp(c, u.id);
+    if (!t) fail(400, '尚未绑定验证器，请使用通行密钥');
+    await consumeTotp(c, t, proof.code);
+  } else {
+    const ch = await c.env.DB.prepare(`DELETE FROM auth_challenges WHERE id=? AND user_id=? AND session_hash=?
+      AND kind='authenticate' AND expires_at>? RETURNING challenge`)
+      .bind(proof.id, u.id, c.get('session').token_hash, Date.now()).first<{ challenge: string }>();
+    if (!ch) fail(401, '验证已过期，请重试');
+    statements.push(await checkPasskey(c, u.id, ch.challenge, proof.response));
+  }
+  const codes = await issueSecrets(c.env.DB, u.id, 'recovery');
+  await c.env.DB.batch([
+    ...statements,
+    c.env.DB.prepare("DELETE FROM one_time_secrets WHERE user_id=? AND kind='recovery'").bind(u.id),
+    ...codes.statements,
+  ]);
+  return c.json({ recovery_codes: codes.values });
 });
 auth.post('/admin/users/:id/reset', async c => {
   admin(c);
