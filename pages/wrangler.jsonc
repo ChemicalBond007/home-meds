@@ -1,0 +1,9 @@
+// Public front end. Static files come from the shared Vite build; /api/* is
+// forwarded to the home-meds Worker, which owns D1, secrets and the Cron reminders.
+{
+  "$schema": "../node_modules/wrangler/config-schema.json",
+  "name": "home-meds",
+  "pages_build_output_dir": "../dist",
+  "compatibility_date": "2026-10-16",
+  "services": [{ "binding": "API", "service": "home-meds" }]
+}

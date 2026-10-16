@@ -4,7 +4,10 @@
   "main": "src/worker/index.ts",
   "compatibility_date": "2026-10-16",
   "compatibility_flags": ["nodejs_compat"],
-  "workers_dev": true,
+  // Public traffic enters through the Pages project in pages/ (service binding),
+  // so this Worker has no public URL; it still serves assets for local wrangler dev.
+  "workers_dev": false,
+  "preview_urls": false,
   "assets": {
     "directory": "./dist",
     "binding": "ASSETS",
@@ -20,7 +23,7 @@
   "triggers": { "crons": ["*/5 * * * *"] },
   "vars": {
     "VAPID_PUBLIC_KEY": "BLIegy6jlROnqmPFe87zyBD3j5m-v1qvwIseRzbzfiBfkWCJb3GXdUXyGUSFm-JeMwXrgT3FJPrxYZtiE7NdZZQ",
-    "VAPID_SUBJECT": "https://home-meds.chemicalbond007.workers.dev"
+    "VAPID_SUBJECT": "https://home-meds.pages.dev"
   },
   "observability": {
     "enabled": true,

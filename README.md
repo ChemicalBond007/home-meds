@@ -95,9 +95,24 @@ npm run vapid:generate
 
 点击通知只打开确认流程，**通知里不能直接勾掉**。过期通知不会替今天的项勾选。手机先添加到桌面，再从桌面进入「设置 → 开启提醒」。国内安卓可能缺少 Google 推送服务，iPhone 需要 iOS 16.4 以上；首页提醒是主要渠道。
 
-## 部署到 workers.dev
+## 部署（Pages 前端 + Worker 后端）
 
-`wrangler.jsonc` 已绑定正式 D1 数据库和正式 VAPID 公钥。正式 `APP_ENC_KEY` 与 VAPID 私钥由 `wrangler deploy --secrets-file .secrets/production.env` 上传，该文件在忽略目录中，请把内容移入密码管理器后删除本地副本。重新部署到新账号时，按以下步骤执行：
+正式网址：`https://home-meds.pages.dev`。
+
+- `home-meds` Worker（根目录 `wrangler.jsonc`）：全部 API、D1、密钥和每五分钟的 Cron 提醒。已关闭 workers.dev 和预览网址，只能经服务绑定和 Cron 调用。本地 `npm run dev:worker` 仍由它同时提供页面和 API。
+- `home-meds` Pages 项目（`pages/`）：发布同一份 `dist` 静态文件；`pages/functions/api/[[path]].ts` 把 `/api/*` 请求原样经服务绑定 `API` 转给 Worker。Cookie、同源检查和通行密钥 RP ID 都取自这个请求，因此都绑定 `home-meds.pages.dev`。
+
+不用 workers.dev 的原因：在当前账号上，所有 workers.dev 请求都返回 1101，连只有一行代码的测试 Worker 也一样，Cloudflare 分析中的脚本名为 `__unknown__`；而同一版本的 Cron 和服务绑定调用都正常，pages.dev 也正常。即使以后 workers.dev 恢复，也建议只保留一个正式网址，避免通行密钥和登录状态分裂。
+
+日常发布：
+
+```powershell
+npm run deploy   # 构建，先发布 Worker，再发布 Pages
+```
+
+`wrangler.jsonc` 已绑定正式 D1 数据库和 VAPID 公钥。正式 `APP_ENC_KEY` 与 VAPID 私钥已作为 Worker 密钥上传，之后的发布不会改动它们。本地的 `.secrets/production.env` 在忽略目录中，请把内容移入密码管理器后删除本地副本。
+
+部署到新账号时：
 
 ```powershell
 npx wrangler login
@@ -109,15 +124,16 @@ npx wrangler d1 create home-meds
 
 ```powershell
 npm run db:remote
-npx wrangler secret put APP_ENC_KEY
-npx wrangler secret put VAPID_PRIVATE_KEY
-npm run deploy
+npm run build
+npx wrangler deploy --secrets-file .secrets/production.env
+cd pages; npx wrangler pages project create home-meds --production-branch main; cd ..
+npm run deploy:pages
 npm run admin:create -- 管理员名字 --remote
 ```
 
-`secret put` 从安全输入读取，不要把真实密钥放入命令参数。VAPID 私钥可用 PowerShell 的文件读取管道传给 `wrangler secret put VAPID_PRIVATE_KEY`，不要在终端显示文件内容。APP_ENC_KEY 必须稳定保存，丢失或直接替换会使已有 TOTP 和后台 API 密钥无法解密；本版不包含加密密钥重加密迁移工具。
+`.secrets/production.env` 使用 `.env` 格式，包含 `APP_ENC_KEY`（至少 32 字符的随机值）和 `VAPID_PRIVATE_KEY`（`npm run vapid:generate` 生成的私钥）。也可以改用 `npx wrangler secret put` 从安全输入逐个上传。不要把真实密钥放入命令参数或终端输出。APP_ENC_KEY 必须稳定保存，丢失或直接替换会使已有 TOTP 和后台 API 密钥无法解密；本版不包含加密密钥重加密迁移工具。Pages 项目名若已被占用，网址会带后缀，需要同步修改 `VAPID_SUBJECT`。
 
-部署后在 `https://home-meds.<你的子域>.workers.dev` 绑定管理员。通行密钥绑定此网址，本地和正式域名不能互用。再在后台填入正式 LLM/Tavily 密钥，检测接口能力，实测 DuckDuckGo。最后在真机安装 PWA、订阅并设置一条人工确认过的测试计划，核对 Cron、本人通知、家人通知、点击确认和库存变化。
+部署后在 `https://home-meds.pages.dev` 绑定管理员。通行密钥绑定此网址，本地和正式域名不能互用。再在后台填入正式 LLM/Tavily 密钥，检测接口能力，实测 DuckDuckGo。最后在真机安装 PWA、订阅并设置一条人工确认过的测试计划，核对 Cron、本人通知、家人通知、点击确认和库存变化。
 
 Wrangler 的远程 migration、secret 和 deploy 都会修改远程状态。不要把 `db:demo` 或测试用密钥用于生产。
 
@@ -129,6 +145,7 @@ npm run check
 npm test
 npm run build
 npx wrangler deploy --dry-run
+npm run check:pages
 ```
 
 Workers 测试使用 `@cloudflare/vitest-plugin`，它是计划中 `@cloudflare/vitest-pool-workers` 的官方更名后继。旧包已停止更新，旧 runtime 与本项目兼容日期不一致，因此改用当前后继包，而非降低测试兼容日期。测试在 workerd 内运行真实 D1 和 WebCrypto，外部 AI、搜索和推送服务使用模拟响应。
@@ -147,4 +164,5 @@ migrations/      D1 结构与事务触发器
 scripts/         管理员创建、AI 探测、VAPID
 tests/           workerd 单元和接口测试、本地演示 SQL
 public/          PWA manifest、SW、离线页、自托管图标
+pages/           Pages 前端配置和 /api 转发函数
 ```
