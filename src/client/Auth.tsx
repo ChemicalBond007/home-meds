@@ -3,6 +3,7 @@ import { startAuthentication, startRegistration } from '@simplewebauthn/browser'
 import type { PublicKeyCredentialRequestOptionsJSON, PublicKeyCredentialCreationOptionsJSON } from '@simplewebauthn/browser';
 import { api } from './api';
 import { Message, errorText, Icon, useLoad } from './components';
+import { TotpSetup } from './TotpSetup';
 export function Login({ done }: { done: () => void }) {
   const [mode, setMode] = useState<'login' | 'register' | 'admin'>('login');
   const [name, setName] = useState(''), [secret, setSecret] = useState(''), [code, setCode] = useState(''), [join, setJoin] = useState('');
@@ -55,6 +56,7 @@ export function Security({ done, bindingOnly = false }: { done: () => void; bind
     setBusy(true); setError('');
     try {
       const r = await work();
+      setSecret(''); setUri(''); setCode('');
       if (r.recovery_codes) setCodes(r.recovery_codes);
       else { setSuccess('绑定成功'); setFactors(n => n + 1); }
     } catch (e) { setError(errorText(e)); } finally { setBusy(false); }
@@ -69,12 +71,13 @@ export function Security({ done, bindingOnly = false }: { done: () => void; bind
       })}>绑定通行密钥</button>
       <p>也可以使用身份验证器应用。</p>
       {!secret ? <button className="secondary" disabled={busy} onClick={() => {
-        setBusy(true);
+        setBusy(true); setError(''); setSuccess('');
         api<{ secret: string; uri: string }>('/auth/totp/setup', 'POST', {}).then(d => { setSecret(d.secret); setUri(d.uri); }).catch(e => setError(errorText(e))).finally(() => setBusy(false));
       }}>开始绑定验证器</button> : <form onSubmit={e => { e.preventDefault(); void bind(() => api('/auth/totp/bind', 'POST', { code })); }}>
-        <p>在验证器中添加账号，手动输入密钥：</p><code className="secret">{secret}</code><p><a href={uri}>在支持的验证器中打开</a></p>
-        <label>验证器当前 6 位验证码<input inputMode="numeric" value={code} onChange={e => setCode(e.target.value)} pattern="[0-9]{6}" required /></label>
-        <button disabled={busy}>验证并完成绑定</button>
+        <TotpSetup secret={secret} uri={uri} />
+        <label>验证器当前 6 位验证码<input inputMode="numeric" autoComplete="one-time-code" value={code} onChange={e => setCode(e.target.value)} pattern="[0-9]{6}" maxLength={6} required /></label>
+        <div className="actions"><button disabled={busy}>验证并完成绑定</button>
+          <button type="button" className="secondary" disabled={busy} onClick={() => { setSecret(''); setUri(''); setCode(''); setError(''); }}>取消绑定</button></div>
       </form>}
     </>}
   </section>{!bindingOnly && <RecoveryCodes version={factors} />}</>;

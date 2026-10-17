@@ -164,7 +164,7 @@ auth.post('/auth/totp/setup', async c => {
   await c.env.DB.prepare(`INSERT INTO totp_secrets(user_id,encrypted_secret) VALUES(?,?)
     ON CONFLICT(user_id) DO UPDATE SET encrypted_secret=excluded.encrypted_secret WHERE verified=0`)
     .bind(c.get('user').id, await encrypt(c.env.APP_ENC_KEY, 'totp', secret)).run();
-  return c.json({ secret, uri: `otpauth://totp/${encodeURIComponent(`家药箱:${c.get('user').username}`)}?secret=${secret}&issuer=HomeMeds` });
+  return c.json({ secret, uri: `otpauth://totp/${encodeURIComponent(`HomeMeds:${c.get('user').username}`)}?secret=${secret}&issuer=HomeMeds&algorithm=SHA1&digits=6&period=30` });
 });
 auth.post('/auth/totp/bind', async c => {
   admin(c);

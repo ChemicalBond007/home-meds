@@ -60,6 +60,8 @@ async function passkey(userId: string) {
 describe('permissions and credentials', () => {
   it('requires login and same-origin mutations', async () => {
     expect((await call('/stock', 'GET', undefined, 'invalid')).status).toBe(401);
+    expect((await call('/auth/totp/setup', 'POST', {}, 'invalid')).status).toBe(401);
+    expect((await call('/auth/totp/setup', 'POST', {})).status).toBe(403);
     expect((await call('/doses', 'POST', dose(), 'test-session', { Origin: 'https://evil.test' })).status).toBe(403);
     expect((await call('/members/u', 'PATCH', { is_elderly: true, group_id: 'g' })).status).toBe(403);
   });
@@ -89,8 +91,19 @@ describe('permissions and credentials', () => {
     await env.DB.batch(temporary.statements);
     const setup = await call('/auth/totp/setup', 'POST', {}, 'test-admin');
     expect(setup.status).toBe(200);
-    const { secret } = await setup.json() as { secret: string };
-    const code = await totpCode(secret, Math.floor(Date.now() / 30000));
+    expect(setup.headers.get('Cache-Control')).toBe('no-store');
+    const { secret, uri } = await setup.json() as { secret: string; uri: string };
+    const parsed = new URL(uri);
+    expect(parsed.protocol).toBe('otpauth:');
+    expect(parsed.hostname).toBe('totp');
+    expect(decodeURIComponent(parsed.pathname.slice(1))).toBe('HomeMeds:管理员');
+    expect(parsed.searchParams.get('issuer')).toBe('HomeMeds');
+    expect(parsed.searchParams.get('secret')).toBe(secret);
+    expect(secret).toMatch(/^[A-Z2-7]{32}$/);
+    expect(parsed.searchParams.get('algorithm')).toBe('SHA1');
+    expect(parsed.searchParams.get('digits')).toBe('6');
+    expect(parsed.searchParams.get('period')).toBe('30');
+    const code = await totpCode(parsed.searchParams.get('secret')!, Math.floor(Date.now() / (Number(parsed.searchParams.get('period')) * 1000)));
     const bind = await call('/auth/totp/bind', 'POST', { code }, 'test-admin');
     expect(bind.status).toBe(200);
     const result = await bind.json() as { recovery_codes: string[] };
