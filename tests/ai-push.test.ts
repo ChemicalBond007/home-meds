@@ -3,8 +3,9 @@ import { env } from 'cloudflare:workers';
 import { app } from '../src/worker';
 import { b64, hash, randomToken } from '../src/worker/crypto';
 import { getApiKey, saveApiKey, aiSettingsSchema } from '../src/worker/ai-config';
-import { parseModelJson, publicUrl, fetchPage } from '../src/worker/ai-http';
+import { complete, parseModelJson, publicUrl, fetchPage } from '../src/worker/ai-http';
 import { runReminders } from '../src/worker/push';
+import { mockFetch } from './fetch';
 const currentDate = '2026-01-01';
 async function call(path: string, body: object, admin = false) {
   return app.request(`https://home.test/api${path}`, {
@@ -35,8 +36,29 @@ describe('AI validation, limits and drafts', () => {
     for (const url of ['file:///etc/passwd', 'http://127.0.0.1', 'http://[::1]', 'http://metadata.google.internal', 'https://x.local', 'https://u:p@example.com']) expect(() => publicUrl(url)).toThrow();
   });
   it('rejects redirect hops to internal addresses', async () => {
-    vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response(null, { status: 302, headers: { Location: 'http://127.0.0.1' } }));
-    await expect(fetchPage('https://example.com')).rejects.toThrow();
+    const mock = mockFetch(new Response(null, { status: 302, headers: { Location: 'http://127.0.0.1' } }));
+    await expect(fetchPage('https://example.com')).rejects.toThrow('只允许公开');
+    expect(mock.requests).toHaveLength(1);
+  });
+  it('never follows LLM redirects, so the key only reaches the configured host', async () => {
+    const mock = mockFetch(new Response(null, { status: 307, headers: { Location: 'https://other.example.com/chat/completions' } }));
+    await expect(complete(aiSettingsSchema.parse({}), 'mock-key', [{ role: 'user', content: '测试' }])).rejects.toThrow('307');
+    expect(mock.requests.map(r => r.redirect)).toEqual(['manual']);
+  });
+  it('passes every capability probe', async () => {
+    await saveApiKey(env, 'llm', 'mock-key');
+    mockFetch(
+      llm('{"name":null}'),
+      llm(null, [toolCall('echo', {})]), llm('echo-ok'),
+      llm('{"name":null}'),
+      new Response('搜索结果', { headers: { 'Content-Type': 'text/html' } }),
+    );
+    expect(await (await call('/ai/probe', {}, true)).json()).toMatchObject({
+      prompt: { ok: true, result: { name: null } },
+      tool_roundtrip: { ok: true, result: { tool_calls: true, roundtrip: true } },
+      json_schema: { ok: true, result: { normalized: { name: null } } },
+      duckduckgo: { ok: true },
+    });
   });
   it('encrypts settings and never returns keys', async () => {
     await saveApiKey(env, 'llm', 'mock-key');
@@ -48,23 +70,24 @@ describe('AI validation, limits and drafts', () => {
   });
   it('does one repair, retrieves sources, and does not write products/cache', async () => {
     await saveApiKey(env, 'llm', 'mock-key'); await saveApiKey(env, 'tavily', 'mock-search');
-    const mock = vi.spyOn(globalThis, 'fetch');
-    mock.mockResolvedValueOnce(llm(null, [toolCall('web_search', { query: '测试药' })]))
-      .mockResolvedValueOnce(Response.json({ results: [{ ...medicine.sources[0], content: '只有药名为测试药，其他信息未知。' }] }))
-      .mockResolvedValueOnce(llm('not-json'))
-      .mockResolvedValueOnce(llm(JSON.stringify([medicine])));
+    const mock = mockFetch(
+      llm(null, [toolCall('web_search', { query: '测试药' })]),
+      Response.json({ results: [{ ...medicine.sources[0], content: '只有药名为测试药，其他信息未知。' }] }),
+      llm('not-json'),
+      llm(JSON.stringify([medicine])),
+    );
     const r = await call('/ai/lookup', { query: '测试药' });
     const s = await r.text();
     expect(s).toContain('event: result');
     expect(s).toContain('"requires_confirmation":true');
-    expect(mock).toHaveBeenCalledTimes(4);
+    expect(mock.requests).toHaveLength(4);
     expect(await env.DB.prepare('SELECT COUNT(*) AS n FROM products').first('n')).toBe(0);
     expect(await env.DB.prepare('SELECT COUNT(*) AS n FROM catalog_cache').first('n')).toBe(0);
   });
   it('atomically applies group daily lookup quota', async () => {
     await saveApiKey(env, 'llm', 'mock-key'); await saveApiKey(env, 'tavily', 'mock-search');
     await env.DB.prepare("INSERT INTO app_settings(key,value) VALUES('ai',?)").bind(JSON.stringify(aiSettingsSchema.parse({ lookup_daily_limit: 1 }))).run();
-    vi.spyOn(globalThis, 'fetch').mockResolvedValue(llm('{}'));
+    mockFetch(llm('{}'));
     await (await call('/ai/lookup', { query: '药' })).text();
     expect((await call('/ai/lookup', { query: '药' })).status).toBe(429);
   });
@@ -72,9 +95,9 @@ describe('AI validation, limits and drafts', () => {
     await saveApiKey(env, 'llm', 'mock-key');
     const draft = { user_id: 'u', product_id: null, medicine_name: '测试药', amount: 1, unit: '片', frequency: 'daily', times: ['08:00'], start_date: currentDate };
     const streamResponse = (delta: unknown) => new Response(`data: ${JSON.stringify({ choices: [{ delta }] })}\n\ndata: [DONE]\n\n`, { headers: { 'Content-Type': 'text/event-stream' } });
-    vi.spyOn(globalThis, 'fetch').mockResolvedValueOnce(streamResponse({ tool_calls: [{
+    mockFetch(streamResponse({ tool_calls: [{
       index: 0, ...toolCall('propose_plan', { draft }),
-    }] })).mockResolvedValueOnce(streamResponse({ content: '请核对确认卡片。' }));
+    }] }), streamResponse({ content: '请核对确认卡片。' }));
     const r = await call('/ai/chat', { user_id: 'u', messages: [{ role: 'user', content: '帮我记录' }] });
     const body = await r.text();
     expect(body).toContain('event: draft');
@@ -94,34 +117,45 @@ async function pushEnv() {
 }
 describe('encrypted cron notifications', () => {
   it('sends self then family after 30 minutes, deduplicating both', async () => {
-    const e = await pushEnv(), mock = vi.spyOn(globalThis, 'fetch').mockImplementation(async () => new Response(null, { status: 201 }));
+    const e = await pushEnv(), mock = mockFetch(new Response(null, { status: 201 }));
     await runReminders(e, new Date('2026-01-01T00:00:00Z'));
-    expect(mock).toHaveBeenCalledTimes(1);
+    expect(mock.requests).toHaveLength(1);
     await runReminders(e, new Date('2026-01-01T00:30:00Z'));
-    expect(mock).toHaveBeenCalledTimes(2);
+    expect(mock.requests).toHaveLength(2);
     await runReminders(e, new Date('2026-01-01T00:35:00Z'));
-    expect(mock).toHaveBeenCalledTimes(2);
-    const payload = mock.mock.calls[0][1]!;
-    expect(payload.headers).toHaveProperty('content-encoding', 'aes128gcm');
+    expect(mock.requests).toHaveLength(2);
+    expect(mock.requests[0].headers.get('content-encoding')).toBe('aes128gcm');
   });
   it('cleans subscriptions when a push service returns 410', async () => {
     const e = await pushEnv();
-    vi.spyOn(globalThis, 'fetch').mockImplementation(async () => new Response(null, { status: 410 }));
+    mockFetch(new Response(null, { status: 410 }));
     await runReminders(e, new Date('2026-01-01T00:30:00Z'));
     expect(await env.DB.prepare('SELECT COUNT(*) AS n FROM push_subscriptions').first('n')).toBe(0);
   });
+  it('does not follow a push redirect, keeps the subscription and retries on the next run', async () => {
+    const e = await pushEnv();
+    const mock = mockFetch(new Response(null, { status: 307, headers: { Location: 'https://other.example.com/' } }), new Response(null, { status: 201 }));
+    const status = () => env.DB.prepare('SELECT status FROM notification_log').first('status');
+    await runReminders(e, new Date('2026-01-01T00:00:00Z'));
+    expect(mock.requests.map(r => [r.url, r.redirect])).toEqual([['https://push.example.com/u', 'manual']]);
+    expect(await status()).toBe('failed');
+    await runReminders(e, new Date('2026-01-01T00:05:00Z'));
+    expect(mock.requests).toHaveLength(2);
+    expect(await status()).toBe('sent');
+    expect(await env.DB.prepare('SELECT COUNT(*) AS n FROM push_subscriptions').first('n')).toBe(2);
+  });
   it('does not notify for a skipped dose', async () => {
-    const e = await pushEnv(), mock = vi.spyOn(globalThis, 'fetch');
+    const e = await pushEnv(), mock = mockFetch();
     await env.DB.prepare(`INSERT INTO dose_logs(id,plan_id,user_id,group_id,local_date,scheduled_time,status,amount,unit,actor_id)
       VALUES('log','p','u','g','2026-01-01','08:00','skipped',0,'片','u')`).run();
     await runReminders(e, new Date('2026-01-01T00:30:00Z'));
     expect(mock).not.toHaveBeenCalled();
   });
   it('catches family reminders across local midnight', async () => {
-    const e = await pushEnv(), mock = vi.spyOn(globalThis, 'fetch').mockImplementation(async () => new Response(null, { status: 201 }));
+    const e = await pushEnv(), mock = mockFetch(new Response(null, { status: 201 }));
     await env.DB.prepare(`UPDATE medication_plans SET times='["23:50"]'`).run();
     await runReminders(e, new Date('2026-01-01T16:20:00Z'));
-    expect(mock).toHaveBeenCalledTimes(2);
+    expect(mock.requests).toHaveLength(2);
     expect(await env.DB.prepare("SELECT local_date FROM notification_log WHERE kind='family'").first('local_date')).toBe('2026-01-01');
   });
 });

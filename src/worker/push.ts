@@ -29,7 +29,8 @@ async function send(env: Bindings, sub: Subscription, message: { title: string; 
   const payload = await buildPushPayload({ data: message, options: { ttl: 3600, urgency: 'high' } }, {
     endpoint: sub.endpoint, expirationTime: null, keys: { p256dh: sub.p256dh, auth: sub.auth },
   }, { subject: env.VAPID_SUBJECT, publicKey: env.VAPID_PUBLIC_KEY, privateKey: env.VAPID_PRIVATE_KEY });
-  const response = await fetch(sub.endpoint, { ...payload, redirect: 'error', signal: AbortSignal.timeout(10000) });
+  // The endpoint comes from the browser, so a 3xx is never followed; it fails the ok check below.
+  const response = await fetch(sub.endpoint, { ...payload, redirect: 'manual', signal: AbortSignal.timeout(10000) });
   await response.body?.cancel();
   if (response.status === 404 || response.status === 410) {
     await env.DB.prepare('DELETE FROM push_subscriptions WHERE id=?').bind(sub.id).run();

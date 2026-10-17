@@ -75,8 +75,9 @@ export async function complete(settings: AISettings, key: string, messages: Mess
   const base = publicUrl(settings.base_url);
   if (base.protocol !== 'https:') throw new Error('LLM 接口必须使用 HTTPS');
   const endpoint = `${base.href.replace(/\/$/, '')}/chat/completions`;
+  // A 3xx is never followed (it fails the ok check below), so the key only reaches the configured host.
   const r = await fetch(endpoint, {
-    method: 'POST', redirect: 'error', signal: AbortSignal.timeout(settings.timeout_seconds * 1000),
+    method: 'POST', redirect: 'manual', signal: AbortSignal.timeout(settings.timeout_seconds * 1000),
     headers: { Authorization: `Bearer ${key}`, 'Content-Type': 'application/json' },
     body: JSON.stringify({
       ...settings.extra_body, model: settings.model, messages, max_tokens: settings.max_tokens, stream: !!options.delta,
