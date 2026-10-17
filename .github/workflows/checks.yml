@@ -1,9 +1,15 @@
-name: Checks
+name: Checks and deploy
 on:
   push:
   pull_request:
+  workflow_dispatch:
 permissions:
   contents: read
+# Runs for the same branch queue instead of overlapping, so deploys from main
+# go out in push order.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
 jobs:
   check:
     runs-on: ubuntu-latest
@@ -18,3 +24,35 @@ jobs:
       - run: npm run build
       - run: npx wrangler deploy --dry-run
       - run: npm run check:pages
+  deploy:
+    needs: check
+    if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - run: npm run build
+      # Credentials go only to the Cloudflare steps, so install scripts and
+      # build plugins never see the token. Migrations run before the Worker so
+      # new code never meets an old schema; until the Worker deploy finishes,
+      # the old Worker runs on the new schema.
+      - name: Apply D1 migrations
+        run: npm run db:remote
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+      - name: Deploy Worker
+        run: npm run deploy:worker
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+      - name: Deploy Pages
+        run: npm run deploy:pages
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}

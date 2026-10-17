@@ -106,11 +106,16 @@ npm run vapid:generate
 
 不用 workers.dev 的原因：在当前账号上，所有 workers.dev 请求都返回 1101，连只有一行代码的测试 Worker 也一样，Cloudflare 分析中的脚本名为 `__unknown__`；而同一版本的 Cron 和服务绑定调用都正常，pages.dev 也正常。即使以后 workers.dev 恢复，也建议只保留一个正式网址，避免通行密钥和登录状态分裂。
 
-日常发布：
+日常发布：推送到 GitHub 的 `main` 分支就是发布到正式环境。`.github/workflows/checks.yml` 先运行测试、构建和打包检查，全部通过后依次执行 D1 远程 migration（`npm run db:remote`）、发布 Worker、发布 Pages；任何一步失败，后面的步骤都不会执行。同一分支的运行会排队，不会同时发布。其他分支和 PR 只检查，不发布。不提交代码而重新发布：在 GitHub 的 Actions 页面选择 Checks and deploy → Run workflow → `main`。
 
-```powershell
-npm run deploy   # 构建，先发布 Worker，再发布 Pages
-```
+发布期间，旧 Worker 会在新数据库结构上短暂运行，旧页面也会短暂调用新 Worker，因此 migration 和 API 改动都要兼容上一版（例如只新增表和列，删除或重命名放到之后的发布）。
+
+首次启用自动发布（只需一次）：
+
+1. 在 Cloudflare 控制台 Manage Account → Account API Tokens 创建自定义令牌，只授予：Workers 选 Specified Workers → `home-meds`，角色 Editor；Pages Write；D1 Edit。
+2. 在 GitHub 仓库 Settings → Secrets and variables → Actions 新建两个 Repository secret：`CLOUDFLARE_API_TOKEN`（上面的令牌）和 `CLOUDFLARE_ACCOUNT_ID`（账号 ID，`npx wrangler whoami` 可查看）。令牌只放在 GitHub secret 中，不要写进仓库、命令参数或聊天记录。
+
+本地 `npm run deploy`（构建，先发布 Worker，再发布 Pages，不执行 migration）仍可备用，但会被下一次 `main` 的自动发布覆盖，正式改动应先推送到 `main`。
 
 `wrangler.jsonc` 已绑定正式 D1 数据库和 VAPID 公钥。正式 `APP_ENC_KEY` 与 VAPID 私钥已作为 Worker 密钥上传，之后的发布不会改动它们。本地的 `.secrets/production.env` 在忽略目录中，请把内容移入密码管理器后删除本地副本。
 
@@ -133,6 +138,8 @@ npm run deploy:pages
 npm run admin:create -- 管理员名字 --remote
 ```
 
+再按上面的首次启用步骤，为新账号创建令牌，并更新 GitHub 中的两个 secret。
+
 `.secrets/production.env` 使用 `.env` 格式，包含 `APP_ENC_KEY`（至少 32 字符的随机值）和 `VAPID_PRIVATE_KEY`（`npm run vapid:generate` 生成的私钥）。也可以改用 `npx wrangler secret put` 从安全输入逐个上传。不要把真实密钥放入命令参数或终端输出。APP_ENC_KEY 必须稳定保存，丢失或直接替换会使已有 TOTP 和后台 API 密钥无法解密；本版不包含加密密钥重加密迁移工具。Pages 项目名若已被占用，网址会带后缀，需要同步修改 `VAPID_SUBJECT`。
 
 部署后在 `https://home-meds.pages.dev` 绑定管理员。通行密钥绑定此网址，本地和正式域名不能互用。再在后台填入正式 LLM/Tavily 密钥，检测接口能力，实测 DuckDuckGo。最后在真机安装 PWA、订阅并设置一条人工确认过的测试计划，核对 Cron、本人通知、家人通知、点击确认和库存变化。
@@ -152,7 +159,7 @@ npm run check:pages
 
 Workers 测试使用 `@cloudflare/vitest-plugin`，它是计划中 `@cloudflare/vitest-pool-workers` 的官方更名后继。旧包已停止更新，旧 runtime 与本项目兼容日期不一致，因此改用当前后继包，而非降低测试兼容日期。测试在 workerd 内运行真实 D1 和 WebCrypto，外部 AI、搜索和推送服务使用模拟响应。
 
-测试覆盖时区及 DST 边界、每日/每周/隔日计算、GS1、并发扣库存与回滚、重复勾选、当日撤销、群组隔离、绑定会话、TOTP 重放、一次性凭证、恢复码重新生成（含软件模拟的通行密钥断言和会话绑定挑战）、AI 格式修复、限额、草稿不落库、推送加密与去重、跨午夜家人提醒和 410 清理。CI 运行测试、构建和部署打包检查，不自动部署。
+测试覆盖时区及 DST 边界、每日/每周/隔日计算、GS1、并发扣库存与回滚、重复勾选、当日撤销、群组隔离、绑定会话、TOTP 重放、一次性凭证、恢复码重新生成（含软件模拟的通行密钥断言和会话绑定挑战）、AI 格式修复、限额、草稿不落库、推送加密与去重、跨午夜家人提醒和 410 清理。CI 在每次推送和 PR 时运行测试、构建和部署打包检查；只有 `main` 通过检查后才自动发布。
 
 浏览器测试使用本地演示数据。在 390×844 视口下，老人首页、扫码入口和服药确认弹窗的 axe（WCAG 2.1 AA）检查无违规；剩余 incomplete 项为只含符号的勾选按钮和弹窗遮罩后的元素，已人工核对颜色对比度达到 AA。隐藏的桌面浏览器面板不能进行键盘输入，若面板隐藏，对比度检查也可能显示 incomplete。自动检查不等同于真机和 Lighthouse 验收；相机、WebAuthn 系统弹窗、语音、安装和实际推送需要有权限的真实设备验证。免费版 CPU、Cron 大量加密和实际国内推送可达性也需要上线测量。
 
