@@ -6,7 +6,10 @@ import { z } from 'zod';
 export type Bindings = Omit<Env, 'VAPID_PUBLIC_KEY' | 'VAPID_SUBJECT'> & { VAPID_PUBLIC_KEY: string; VAPID_SUBJECT: string };
 export type AppEnv = {
   Bindings: Bindings;
-  Variables: { user: User; session: { token_hash: string; binding_only: number }; group: FamilyGroup };
+  Variables: {
+    user: User; session: { token_hash: string; binding_only: number }; group: FamilyGroup;
+    auditActor?: User; auditSubject?: string; auditTarget?: string; auditStreaming?: boolean; auditFailed?: boolean;
+  };
 };
 export type Ctx = Context<AppEnv>;
 export function fail(status: 400 | 401 | 403 | 404 | 409 | 429 | 503, message: string): never {
@@ -26,6 +29,7 @@ export async function group(c: Ctx): Promise<FamilyGroup> {
   if (!id) fail(400, '请先选择群组');
   const g = await c.env.DB.prepare('SELECT * FROM groups WHERE id = ?').bind(id).first<FamilyGroup>();
   if (!g) fail(404, '群组不存在');
+  c.set('group', g);
   return g;
 }
 export async function limit(db: D1Database, key: string, maximum: number, seconds: number) {

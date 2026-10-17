@@ -22,6 +22,8 @@ export async function session(c: Ctx, userId: string, bindingOnly = false) {
   const expires = Date.now() + (bindingOnly ? 30 * 60000 : 365 * 86400000);
   await c.env.DB.prepare('INSERT INTO sessions(token_hash,user_id,binding_only,expires_at) VALUES(?,?,?,?)')
     .bind(await hash(token), userId, Number(bindingOnly), expires).run();
+  const actor = await c.env.DB.prepare('SELECT id,username,role,group_id,is_elderly FROM users WHERE id=?').bind(userId).first<User>();
+  if (actor) c.set('auditActor', actor);
   setCookie(c, cookieName, token, {
     httpOnly: true, secure: new URL(c.req.url).protocol === 'https:', sameSite: 'Strict', path: '/',
     maxAge: bindingOnly ? 1800 : 365 * 86400,
@@ -89,6 +91,7 @@ auth.use('*', async (c, next) => {
 });
 auth.post('/auth/register', async c => {
   const data = await json(c, z.object({ username, join_code: z.string().min(1).max(100), is_elderly: z.boolean().default(false) }));
+  c.set('auditSubject', data.username);
   await limit(c.env.DB, `register:${c.req.header('CF-Connecting-IP') || 'local'}`, 10, 3600);
   const g = await c.env.DB.prepare('SELECT id FROM groups WHERE join_code=?').bind(data.join_code.trim()).first<{ id: string }>();
   if (!g) fail(400, '分组码无效');
@@ -101,6 +104,7 @@ auth.post('/auth/register', async c => {
 });
 auth.post('/auth/login', async c => {
   const data = await json(c, credentials);
+  c.set('auditSubject', data.username);
   await limit(c.env.DB, `login:${c.req.header('CF-Connecting-IP') || 'local'}`, 30, 600);
   await limit(c.env.DB, `login-user:${data.username.toLowerCase()}`, 15, 600);
   const u = await c.env.DB.prepare('SELECT * FROM users WHERE username=?').bind(data.username).first<User>();
@@ -205,6 +209,7 @@ auth.post('/auth/passkey/register', async c => {
 });
 auth.post('/auth/passkey/options', async c => {
   const data = await json(c, z.object({ username }));
+  c.set('auditSubject', data.username);
   await limit(c.env.DB, `passkey:${c.req.header('CF-Connecting-IP') || 'local'}`, 30, 600);
   const u = await c.env.DB.prepare("SELECT * FROM users WHERE username=? AND role='admin'").bind(data.username).first<User>();
   if (!u) fail(401, '无法使用通行密钥');

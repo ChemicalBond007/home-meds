@@ -45,6 +45,7 @@ for (const method of ['post', 'put'] as const) {
         last_stock_item_id=CASE WHEN product_id IS ? THEN last_stock_item_id ELSE NULL END WHERE id=? AND group_id=?`)
         .bind(...values, d.product_id, id, g.id).run();
     }
+    c.set('auditTarget', id);
     return c.json({ id }, method === 'post' ? 201 : 200);
   });
 }
@@ -98,6 +99,7 @@ plans.post('/doses', async c => {
         d.status === 'taken' ? d.taken_at! : null, d.status === 'taken' ? d.amount! : 0, p.unit,
         d.status === 'taken' ? d.stock_item_id : null, c.get('user').id)]);
   } catch { fail(409, '已记录过这次服药，或库存不足。请刷新查看'); }
+  c.set('auditTarget', id);
   return c.json({ id }, 201);
 });
 plans.post('/doses/:id/undo', async c => {

@@ -59,6 +59,7 @@ describe('AI validation, limits and drafts', () => {
       json_schema: { ok: true, result: { normalized: { name: null } } },
       duckduckgo: { ok: true },
     });
+    expect(await env.DB.prepare("SELECT outcome FROM audit_logs WHERE action='ai.probe'").first('outcome')).toBe('success');
   });
   it('encrypts settings and never returns keys', async () => {
     await saveApiKey(env, 'llm', 'mock-key');
@@ -83,6 +84,7 @@ describe('AI validation, limits and drafts', () => {
     expect(mock.requests).toHaveLength(4);
     expect(await env.DB.prepare('SELECT COUNT(*) AS n FROM products').first('n')).toBe(0);
     expect(await env.DB.prepare('SELECT COUNT(*) AS n FROM catalog_cache').first('n')).toBe(0);
+    expect(await env.DB.prepare("SELECT outcome FROM audit_logs WHERE action='ai.lookup'").first('outcome')).toBe('success');
   });
   it('atomically applies group daily lookup quota', async () => {
     await saveApiKey(env, 'llm', 'mock-key'); await saveApiKey(env, 'tavily', 'mock-search');
@@ -103,6 +105,31 @@ describe('AI validation, limits and drafts', () => {
     expect(body).toContain('event: draft');
     expect(body).toContain('event: delta');
     expect(await env.DB.prepare('SELECT COUNT(*) AS n FROM medication_plans').first('n')).toBe(1);
+    expect(await env.DB.prepare("SELECT outcome FROM audit_logs WHERE action='ai.chat'").first('outcome')).toBe('success');
+  });
+  it('audits SSE failures as failures despite HTTP 200 and omits chat text and upstream bodies', async () => {
+    await saveApiKey(env, 'llm', 'mock-key'); await saveApiKey(env, 'tavily', 'mock-search');
+    mockFetch(new Response('private-provider-body', { status: 500 }));
+    const chat = await call('/ai/chat', { user_id: 'u', messages: [{ role: 'user', content: 'private-chat-text' }] });
+    expect(chat.status).toBe(200);
+    expect(await chat.text()).toContain('event: error');
+    const lookup = await call('/ai/lookup', { query: '测试药' });
+    expect(lookup.status).toBe(200);
+    expect(await lookup.text()).toContain('event: error');
+    const logs = (await env.DB.prepare("SELECT * FROM audit_logs WHERE action IN ('ai.chat','ai.lookup')").all()).results;
+    expect(logs).toHaveLength(2);
+    for (const row of logs) expect(row).toMatchObject({ actor_id: 'u', group_id: 'g', outcome: 'failure', http_status: 200 });
+    expect(JSON.stringify(logs)).not.toContain('private-chat-text');
+    expect(JSON.stringify(logs)).not.toContain('private-provider-body');
+  });
+  it('audits pre-stream failures and partially failing capability probes', async () => {
+    expect((await call('/ai/lookup', { query: '测试药' })).status).toBe(503);
+    expect(await env.DB.prepare("SELECT outcome,http_status FROM audit_logs WHERE action='ai.lookup'").first()).toEqual({ outcome: 'failure', http_status: 503 });
+    await saveApiKey(env, 'llm', 'mock-key');
+    mockFetch(llm('{"name":null}'), llm(null, [toolCall('echo', {})]), llm('echo-ok'), llm('{"name":null}'),
+      new Response('captcha', { headers: { 'Content-Type': 'text/html' } }));
+    expect((await call('/ai/probe', {}, true)).status).toBe(200);
+    expect(await env.DB.prepare("SELECT outcome,http_status FROM audit_logs WHERE action='ai.probe'").first()).toEqual({ outcome: 'failure', http_status: 200 });
   });
 });
 async function pushEnv() {

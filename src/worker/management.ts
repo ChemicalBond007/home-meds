@@ -28,6 +28,7 @@ management.post('/groups', async c => {
       .bind(id, d.name, code, d.timezone, JSON.stringify(d.meal_times)),
     c.env.DB.prepare('INSERT INTO warehouses(id,group_id,name) VALUES(?,?,?)').bind(crypto.randomUUID(), id, '家中药箱'),
   ]);
+  c.set('auditTarget', id);
   return c.json({ id, join_code: code }, 201);
 });
 management.put('/groups/:id', async c => {
@@ -77,6 +78,7 @@ management.post('/warehouses', async c => {
   const d = await json(c, z.object({ name: z.string().trim().min(1).max(100) }));
   const id = crypto.randomUUID();
   await c.env.DB.prepare('INSERT INTO warehouses(id,group_id,name) VALUES(?,?,?)').bind(id, g.id, d.name).run();
+  c.set('auditTarget', id);
   return c.json({ id }, 201);
 });
 management.put('/warehouses/:id', async c => {

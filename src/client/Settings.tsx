@@ -2,6 +2,7 @@ import { useState } from 'react';
 import { api, sse } from './api';
 import { Confirm, Message, Modal, errorText, useLoad } from './components';
 import { Security } from './Auth';
+import { AdminLogs } from './AdminLogs';
 import type { User, FamilyGroup } from '../shared/types';
 import type { Warehouse } from './Inventory';
 interface AIConfig {
@@ -28,7 +29,7 @@ export function SettingsPage({ user, family, groups, members, warehouses, change
     setMealTimes(g ? JSON.parse(g.meal_times) : { morning: '08:00', noon: '12:00', evening: '18:00', bedtime: '21:30' });
   };
   return <><div className="section-heading"><div><p className="eyebrow">MAKE YOURSELF AT HOME</p><h1>设置</h1><p className="muted">{user.username} · {user.role === 'admin' ? '全局管理员' : user.is_elderly ? '老人模式' : '家庭成员'}</p></div></div>
-    <div className="segmented"><button className={tab === 'general' ? 'active' : ''} onClick={() => setTab('general')}>提醒与账号</button>{user.role === 'admin' && <><button className={tab === 'family' ? 'active' : ''} onClick={() => setTab('family')}>家庭管理</button><button className={tab === 'ai' ? 'active' : ''} onClick={() => setTab('ai')}>AI 配置</button></>}</div>
+    <div className="segmented"><button className={tab === 'general' ? 'active' : ''} onClick={() => setTab('general')}>提醒与账号</button>{user.role === 'admin' && <><button className={tab === 'family' ? 'active' : ''} onClick={() => setTab('family')}>家庭管理</button><button className={tab === 'ai' ? 'active' : ''} onClick={() => setTab('ai')}>AI 配置</button><button className={tab === 'logs' ? 'active' : ''} onClick={() => setTab('logs')}>使用日志</button></>}</div>
     {error && <Message warning>{error}</Message>}{message && <Message>{message}</Message>}
     {tab === 'general' && <>
       <section className="panel"><h2>手机提醒</h2><p>先将应用添加到桌面，再从桌面打开并开启提醒。iPhone 需要 iOS 16.4 以上。</p><Message warning>首页清单是主要提醒。部分国内安卓手机无法接收推送；推送不代表已经服药。</Message>
@@ -61,6 +62,7 @@ export function SettingsPage({ user, family, groups, members, warehouses, change
       })}>退出登录</button></section>
     </>}
     {tab === 'ai' && user.role === 'admin' && <AISettings />}
+    {tab === 'logs' && user.role === 'admin' && <AdminLogs groups={groups} users={users.data || []} usersError={users.error} />}
     {tab === 'family' && user.role === 'admin' && <>
       <section className="panel"><div className="between"><h2>群组与分组码</h2><button onClick={() => edit()}>新建群组</button></div>
         {groups.map(g => <div className="management-row" key={g.id}><div><h3>{g.name}</h3><p>{g.timezone} · 分组码 <code>{g.join_code}</code></p></div><div className="actions"><button className="secondary" onClick={() => edit(g)}>编辑</button><button disabled={busy} className="plain" onClick={() => void act(() => api(`/groups/${g.id}/rotate-code`, 'POST', {}), '分组码已更新，旧码已失效')}>换分组码</button></div></div>)}

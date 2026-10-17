@@ -31,6 +31,7 @@ inventory.post('/products', async c => {
   if (code && d.status === 'confirmed') statements.push(c.env.DB.prepare(`INSERT INTO catalog_cache(code,data) VALUES(?,?)
     ON CONFLICT(code) DO UPDATE SET data=excluded.data,updated_at=datetime('now')`).bind(code, JSON.stringify(d)));
   try { await c.env.DB.batch(statements); } catch { fail(409, '此码已关联药品，请刷新后重试'); }
+  c.set('auditTarget', id);
   return c.json({ id }, 201);
 });
 inventory.put('/products/:id', async c => {
@@ -83,6 +84,7 @@ inventory.post('/stock', async c => {
     if (mapped && mapped.product_id !== p.id) fail(409, '此条码对应另一种药品');
   }
   try { await c.env.DB.batch(statements); } catch { fail(409, '追溯码已入库，不能重复添加'); }
+  c.set('auditTarget', ids[0]);
   return c.json({ ids }, 201);
 });
 inventory.post('/stock/:id/move', async c => {

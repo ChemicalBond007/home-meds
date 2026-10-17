@@ -6,6 +6,7 @@ import { aiSettingsSchema, getSettings, getApiKey, saveApiKey } from './ai-confi
 import { complete, fetchPage, tavily, duckduckgo, parseModelJson, tool, publicUrl, type Message, type Tool, type SearchResult } from './ai-http';
 import { medicineInfoSchema, planSchema } from '../shared/schemas';
 import { localClock } from '../shared/schedule';
+import { writeAudit } from './audit';
 import type { Plan, FamilyGroup } from '../shared/types';
 
 export const ai = new Hono<AppEnv>();
@@ -78,6 +79,7 @@ ai.post('/ai/probe', async c => {
   const tavilyKey = await getApiKey(c.env, 'tavily');
   if (tavilyKey) await run('tavily', async () => ({ results: (await tavily('药品说明书 国家药监局', tavilyKey)).length }));
   await run('duckduckgo', async () => ({ reachable: (await duckduckgo('药品说明书')).length > 0 }));
+  c.set('auditFailed', Object.values(tests).some(t => !(t as { ok: boolean }).ok));
   return c.json(tests);
 });
 ai.post('/ai/lookup', async c => {
@@ -85,6 +87,7 @@ ai.post('/ai/lookup', async c => {
   const settings = await getSettings(c.env), key = await getApiKey(c.env, 'llm'), searchKey = await getApiKey(c.env, 'tavily');
   if (!key || !searchKey) fail(503, '请管理员先配置 LLM 和 Tavily 密钥');
   await quota(c, g, 'lookup', settings.lookup_daily_limit);
+  c.set('auditStreaming', true);
   return streamSSE(c, async stream => {
     let success = false;
     const emit = async (event: string, data: unknown) => { await stream.writeSSE({ event, data: JSON.stringify(data) }); };
@@ -153,10 +156,13 @@ ai.post('/ai/lookup', async c => {
       }
       if (!success) throw new Error('查询已达调用上限，请手动核对或稍后重试');
       await emit('done', {});
-    } catch (e) { await emit('error', e instanceof Error ? e.message : '查询失败'); }
+    } catch (e) { success = false; await emit('error', e instanceof Error ? e.message : '查询失败'); }
     finally {
-      await c.env.DB.prepare('INSERT INTO ai_lookup_logs(id,user_id,group_id,query,success) VALUES(?,?,?,?,?)')
-        .bind(crypto.randomUUID(), c.get('user').id, g.id, d.query, Number(success)).run();
+      success = success && !stream.aborted;
+      try {
+        await c.env.DB.prepare('INSERT INTO ai_lookup_logs(id,user_id,group_id,query,success) VALUES(?,?,?,?,?)')
+          .bind(crypto.randomUUID(), c.get('user').id, g.id, d.query, Number(success)).run();
+      } finally { await writeAudit(c, success ? 'success' : 'failure', 200); }
     }
   });
 });
@@ -189,7 +195,9 @@ ai.post('/ai/chat', async c => {
   const settings = await getSettings(c.env), key = await getApiKey(c.env, 'llm');
   if (!key) fail(503, '请管理员先配置 LLM 密钥');
   await quota(c, g, 'chat', settings.chat_daily_limit);
+  c.set('auditStreaming', true);
   return streamSSE(c, async stream => {
+    let success = false;
     const emit = async (event: string, value: unknown) => { await stream.writeSSE({ event, data: JSON.stringify(value) }); };
     try {
       const messages: Message[] = [{
@@ -207,7 +215,7 @@ ai.post('/ai/chat', async c => {
           delta: text => emit('delta', text),
         });
         messages.push(r);
-        if (!r.tool_calls?.length) { await emit('done', {}); return; }
+        if (!r.tool_calls?.length) { await emit('done', {}); success = true; return; }
         for (const t of r.tool_calls) {
           let result: unknown;
           if (toolCount >= 5) result = { error: '本轮最多5次工具调用，请结束或追问' };
@@ -257,6 +265,8 @@ ai.post('/ai/chat', async c => {
         }
       }
       await emit('done', {});
+      success = true;
     } catch (e) { await emit('error', e instanceof Error ? e.message : '对话失败'); }
+    finally { await writeAudit(c, success && !stream.aborted ? 'success' : 'failure', 200); }
   });
 });
