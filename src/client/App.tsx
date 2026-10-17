@@ -91,8 +91,8 @@ function FamilyContent({ family, groups, user, page, navigate, version, changed,
     {page === 'home' && <Home user={user} family={family} members={members.data || []} today={today.data?.items} stock={stock.data || []}
       openDose={setDose} skip={setSkip} undo={setUndo} scan={() => setScanning(true)} navigate={navigate} intake={() => openIntake({})} />}
     {page === 'inventory' && <InventoryPage family={family} user={user} products={products.data || []} warehouses={warehouses.data || []} version={version} changed={changed} intake={intake} openIntake={openIntake} />}
-    {page === 'plans' && <PlansPage members={members.data || []} products={products.data || []} family={family} user={user} version={version} changed={changed} openDose={setDose} />}
-    {page === 'chat' && members.data && <ChatPage user={user} family={family} members={members.data} products={products.data || []} changed={changed} />}
+    {page === 'plans' && <PlansPage members={members.data || []} products={products.data || []} stock={stock.data} family={family} user={user} version={version} changed={changed} openDose={setDose} />}
+    {page === 'chat' && members.data && <ChatPage user={user} family={family} members={members.data} products={products.data || []} stock={stock.data} changed={changed} />}
     {page === 'settings' && <SettingsPage user={user} family={family} groups={groups} members={members.data || []} warehouses={warehouses.data || []} changed={() => { changed(); }} logout={refreshAuth} />}
     {dose && <DoseDialog todo={dose} close={() => setDose(undefined)} saved={changed} />}
     {skip && <Confirm title="确认这次不吃？" close={() => setSkip(undefined)} action={async () => { await api('/doses', 'POST', {

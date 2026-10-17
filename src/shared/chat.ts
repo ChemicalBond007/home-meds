@@ -3,7 +3,7 @@ import { dateSchema, idSchema, planSchema } from './schemas';
 
 // The server supplies the selected person and, if omitted, today's local date.
 // The complete plan is still validated with planSchema before emitting a card.
-export const planDraftInputSchema = z.object({ ...planSchema.shape }).omit({ user_id: true }).extend({
+export const planDraftInputSchema = z.object({ ...planSchema.shape }).omit({ user_id: true, preferred_stock_item_id: true }).extend({
   start_date: dateSchema.optional(),
   times: planSchema.shape.times.default([]),
 });

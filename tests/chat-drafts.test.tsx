@@ -151,6 +151,28 @@ describe('chat draft staging tools', () => {
     expect((await chat({ user_id: 'x' })).status).toBe(400);
     await unchanged();
   });
+  it.each(['update', 'pause'])('preserves the preferred box on an AI %s instead of accepting a guessed replacement', async operation => {
+    await env.DB.prepare("UPDATE medication_plans SET preferred_stock_item_id='box' WHERE id='p'").run();
+    mockFetch(invoke(operation === 'pause' ? 'propose_plan_pause' : 'propose_plan_update',
+      { planId: 'p', changes: { amount: 3, preferred_stock_item_id: 'guessed-box' } }), stream({ content: '请核对。' }));
+    const cards = cardFrames(await (await chat()).text());
+    expect(cards[0].draft.preferred_stock_item_id).toBe('box');
+    expect(await env.DB.prepare("SELECT preferred_stock_item_id FROM medication_plans WHERE id='p'").first('preferred_stock_item_id')).toBe('box');
+    await unchanged();
+  });
+  it('leaves new-box selection to the human even if the model supplies a box ID', async () => {
+    mockFetch(invoke('add_plan_draft', { ...flat, preferred_stock_item_id: 'box' }), stream({ content: '请核对。' }));
+    expect(cardFrames(await (await chat()).text())[0].draft.preferred_stock_item_id).toBeNull();
+    await unchanged();
+  });
+  it('clears the old box when the AI changes the product', async () => {
+    await env.DB.prepare("UPDATE medication_plans SET preferred_stock_item_id='box' WHERE id='p'").run();
+    await env.DB.prepare("INSERT INTO products(id,group_id,name,created_by) VALUES('next','g','另一测试药','u')").run();
+    mockFetch(invoke('find_medicines', { query: '另一测试药' }),
+      invoke('propose_plan_update', { planId: 'p', changes: { product_id: 'next' } }), stream({ content: '请核对。' }));
+    expect(cardFrames(await (await chat()).text())[0].draft).toMatchObject({ product_id: 'next', preferred_stock_item_id: null });
+    await unchanged();
+  });
   it('deduplicates repeated tool calls within a turn and returns the same pending draft id', async () => {
     mockFetch(toolCalls([{ name: 'add_plan_draft', args: flat }, { name: 'add_plan_draft', args: flat }]), async request => {
       const body = await request.json() as { messages: { role: string; content: string }[] };

@@ -8,7 +8,7 @@ export const fixturePlan: Plan = {
   id: 'p', group_id: 'g', user_id: 'u', product_id: null, medicine_name: '药', amount: 1, unit: '片',
   times: '["08:00","20:00"]', frequency: 'daily', weekdays: '[1,3]', interval_days: 3,
   start_date: '2026-01-01', end_date: null, meal_relation: 'after', notes: '', enabled: 1,
-  notify_family: 1, last_stock_item_id: null, created_by: 'u', updated_by: 'u',
+  notify_family: 1, last_stock_item_id: null, preferred_stock_item_id: null, created_by: 'u', updated_by: 'u',
 };
 describe('barcode parser', () => {
   it('normalizes EAN13 and rejects invalid checksums', () => {

@@ -64,6 +64,7 @@ export interface Plan {
   enabled: number;
   notify_family: number;
   last_stock_item_id: string | null;
+  preferred_stock_item_id: string | null;
   created_by: string;
   updated_by: string;
 }

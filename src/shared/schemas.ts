@@ -7,6 +7,7 @@ export const amountSchema = z.number().min(0.001).max(100000).refine(n => Math.a
 export const planSchema = z.object({
   user_id: idSchema,
   product_id: idSchema.nullable().default(null),
+  preferred_stock_item_id: idSchema.nullable().optional(),
   medicine_name: z.string().trim().min(1).max(200),
   amount: amountSchema,
   unit: z.string().trim().min(1).max(20),
@@ -20,7 +21,8 @@ export const planSchema = z.object({
   notes: z.string().max(2000).default(''),
   enabled: z.boolean().default(true),
   notify_family: z.boolean().optional(),
-}).refine(p => !p.end_date || p.end_date >= p.start_date, '结束日期不能早于开始日期')
+}).refine(p => !p.preferred_stock_item_id || !!p.product_id, '选择优先药盒前请先选择药品')
+  .refine(p => !p.end_date || p.end_date >= p.start_date, '结束日期不能早于开始日期')
   .refine(p => p.frequency === 'as_needed' || p.times.length > 0, '请选择服药时间')
   .refine(p => p.frequency !== 'weekly' || p.weekdays.length > 0, '请选择每周几');
 

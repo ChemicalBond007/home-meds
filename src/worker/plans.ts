@@ -31,17 +31,29 @@ for (const method of ['post', 'put'] as const) {
       if (product.base_unit !== d.unit) fail(400, `用量单位必须是${product.base_unit}`);
     }
     const id = method === 'post' ? crypto.randomUUID() : c.req.param('id')!;
-    if (method === 'put' && !await c.env.DB.prepare('SELECT id FROM medication_plans WHERE id=? AND group_id=?').bind(id, g.id).first()) fail(404, '计划不存在');
+    const existing = method === 'put' ? await c.env.DB.prepare('SELECT * FROM medication_plans WHERE id=? AND group_id=?').bind(id, g.id).first<Plan>() : null;
+    if (method === 'put' && !existing) fail(404, '计划不存在');
+    const preferredId = d.preferred_stock_item_id === undefined && existing?.product_id === d.product_id
+      ? existing.preferred_stock_item_id : d.preferred_stock_item_id ?? null;
+    if (preferredId) {
+      const box = await c.env.DB.prepare('SELECT * FROM stock_items WHERE id=? AND group_id=? AND product_id=?')
+        .bind(preferredId, g.id, d.product_id).first<StockItem>();
+      if (!box) fail(400, '优先药盒不属于当前药品或家庭');
+      // Keep an unavailable preference visible when editing other plan fields.
+      // A new preference must be usable; actual doses always reselect from current stock.
+      if (preferredId !== existing?.preferred_stock_item_id && (box.status !== 'active' || box.units_remaining <= 0))
+        fail(400, '优先药盒已用尽或报废，请重新选择');
+    }
     const values = [d.user_id, d.product_id, product?.name || d.medicine_name, d.amount, d.unit, JSON.stringify(d.times), d.frequency,
       JSON.stringify([...new Set(d.weekdays)]), d.interval_days, d.start_date, d.end_date, d.meal_relation, d.notes,
-      Number(d.enabled), Number(d.notify_family ?? !!target.is_elderly), c.get('user').id];
+      Number(d.enabled), Number(d.notify_family ?? !!target.is_elderly), c.get('user').id, preferredId];
     if (method === 'post') {
       await c.env.DB.prepare(`INSERT INTO medication_plans(user_id,product_id,medicine_name,amount,unit,times,frequency,weekdays,interval_days,
-        start_date,end_date,meal_relation,notes,enabled,notify_family,updated_by,id,group_id,created_by) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`)
+        start_date,end_date,meal_relation,notes,enabled,notify_family,updated_by,preferred_stock_item_id,id,group_id,created_by) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`)
         .bind(...values, id, g.id, c.get('user').id).run();
     } else {
       await c.env.DB.prepare(`UPDATE medication_plans SET user_id=?,product_id=?,medicine_name=?,amount=?,unit=?,times=?,frequency=?,weekdays=?,
-        interval_days=?,start_date=?,end_date=?,meal_relation=?,notes=?,enabled=?,notify_family=?,updated_by=?,updated_at=datetime('now'),
+        interval_days=?,start_date=?,end_date=?,meal_relation=?,notes=?,enabled=?,notify_family=?,updated_by=?,preferred_stock_item_id=?,updated_at=datetime('now'),
         last_stock_item_id=CASE WHEN product_id IS ? THEN last_stock_item_id ELSE NULL END WHERE id=? AND group_id=?`)
         .bind(...values, d.product_id, id, g.id).run();
     }
@@ -64,7 +76,7 @@ plans.get('/plans/:id/boxes', async c => {
     JOIN warehouses w ON w.id=s.warehouse_id JOIN products pr ON pr.id=s.product_id
     WHERE s.group_id=? AND s.product_id=? AND s.status='active' AND s.units_remaining>0
     ORDER BY s.opened DESC,s.expiry_date IS NULL,s.expiry_date,s.created_at`).bind(g.id, p.product_id).all<StockItem>();
-  return c.json({ boxes: boxes.results, last_stock_item_id: p.last_stock_item_id });
+  return c.json({ boxes: boxes.results, last_stock_item_id: p.last_stock_item_id, preferred_stock_item_id: p.preferred_stock_item_id });
 });
 plans.post('/doses', async c => {
   const g = await group(c), now = new Date(), clock = localClock(now, g.timezone);
@@ -72,6 +84,7 @@ plans.post('/doses', async c => {
     plan_id: z.string(), local_date: dateSchema, scheduled_time: z.string().max(80),
     status: z.enum(['taken', 'skipped']), amount: amountSchema.optional(), taken_at: z.iso.datetime({ offset: true }).optional(),
     stock_item_id: z.string().nullable().default(null), confirm_expired: z.boolean().default(false),
+    expected_stock_version: z.number().int().min(0).optional(),
   }));
   const p = await c.env.DB.prepare('SELECT * FROM medication_plans WHERE id=? AND group_id=?').bind(d.plan_id, g.id).first<Plan>();
   if (!p || !p.enabled) fail(404, '计划不存在或已暂停');
@@ -92,13 +105,18 @@ plans.post('/doses', async c => {
     if (box.expiry_date && box.expiry_date < clock.date && !d.confirm_expired) fail(400, '药已过期，请再次明确确认');
   }
   const id = crypto.randomUUID();
+  let changes = 0;
+  const checkVersion = d.status === 'taken' && d.stock_item_id && d.expected_stock_version !== undefined;
   try {
     // Triggers run inside this D1 batch, so validation, stock, history and the remembered box commit together.
-    await c.env.DB.batch([c.env.DB.prepare(`INSERT INTO dose_logs(id,plan_id,user_id,group_id,local_date,scheduled_time,status,taken_at,amount,unit,stock_item_id,actor_id)
-      VALUES(?,?,?,?,?,?,?,?,?,?,?,?)`).bind(id, p.id, p.user_id, g.id, d.local_date, d.scheduled_time, d.status,
+    const result = await c.env.DB.batch([c.env.DB.prepare(`INSERT INTO dose_logs(id,plan_id,user_id,group_id,local_date,scheduled_time,status,taken_at,amount,unit,stock_item_id,actor_id)
+      SELECT ?,?,?,?,?,?,?,?,?,?,?,?${checkVersion ? ' WHERE EXISTS (SELECT 1 FROM stock_items WHERE id=? AND metadata_version=?)' : ''}`).bind(id, p.id, p.user_id, g.id, d.local_date, d.scheduled_time, d.status,
         d.status === 'taken' ? d.taken_at! : null, d.status === 'taken' ? d.amount! : 0, p.unit,
-        d.status === 'taken' ? d.stock_item_id : null, c.get('user').id)]);
+        d.status === 'taken' ? d.stock_item_id : null, c.get('user').id,
+        ...(checkVersion ? [d.stock_item_id, d.expected_stock_version!] : []))]);
+    changes = result[0].meta.changes;
   } catch { fail(409, '已记录过这次服药，或库存不足。请刷新查看'); }
+  if (!changes) fail(409, '药盒资料或库存已变化，请重新核对有效期和药盒后记录');
   c.set('auditTarget', id);
   return c.json({ id }, 201);
 });

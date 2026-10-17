@@ -4,15 +4,15 @@ import { Message, Empty, errorText } from './components';
 import { PlanEditor } from './Plans';
 import { appendProposal, parseProposal } from './chat-drafts';
 import type { Proposal } from '../shared/chat';
-import type { FamilyGroup, Product, User } from '../shared/types';
+import type { FamilyGroup, Product, StockItem, User } from '../shared/types';
 interface ChatMessage { role: 'user' | 'assistant'; content: string }
 interface VoiceRecognition {
   lang: string; continuous: boolean;
   onresult: ((e: { results: { transcript: string }[][] }) => void) | null;
   onerror: (() => void) | null; start(): void; stop(): void;
 }
-export function ChatPage({ user, family, members, products, changed }: {
-  user: User; family: FamilyGroup; members: User[]; products: Product[]; changed: () => void;
+export function ChatPage({ user, family, members, products, stock, changed }: {
+  user: User; family: FamilyGroup; members: User[]; products: Product[]; stock?: StockItem[]; changed: () => void;
 }) {
   const [target, setTarget] = useState(members.find(m => m.id === user.id)?.id || members[0]?.id || '');
   const [messages, setMessages] = useState<ChatMessage[]>([]), [text, setText] = useState('');
@@ -73,7 +73,7 @@ export function ChatPage({ user, family, members, products, changed }: {
       </form>
       <p className="fine">对话仅保存在本页内存中，每轮最多发送最近 20 条消息。刷新会清空。</p>
     </section><PendingPlans proposals={proposals} members={members} busy={busy} edit={setEditing} /></div>
-    {editing !== undefined && <PlanEditor initial={proposals[editing].draft} planId={proposals[editing].operation === 'create' ? undefined : proposals[editing].plan_id} members={members} products={products} family={family}
+    {editing !== undefined && <PlanEditor initial={proposals[editing].draft} planId={proposals[editing].operation === 'create' ? undefined : proposals[editing].plan_id} members={members} products={products} stock={stock} family={family}
       close={() => setEditing(undefined)} saved={() => { setProposals(prev => prev.map((p, i) => i === editing ? { ...p, saved: true } : p)); changed(); }} />}
   </>;
 }
