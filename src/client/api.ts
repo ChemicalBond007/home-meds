@@ -40,7 +40,8 @@ export async function sse(path: string, body: unknown, onEvent: (event: string, 
     for (;;) {
       const { done, value } = await reader.read();
       if (done) break;
-      buffer += decoder.decode(value, { stream: true }).replaceAll('\r\n', '\n');
+      buffer += decoder.decode(value, { stream: true });
+      buffer = buffer.replaceAll('\r\n', '\n');
       let end;
       while ((end = buffer.indexOf('\n\n')) >= 0) { process(buffer.slice(0, end)); buffer = buffer.slice(end + 2); }
     }

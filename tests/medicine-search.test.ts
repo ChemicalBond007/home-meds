@@ -95,6 +95,6 @@ describe('read-only medicine catalogue tools', () => {
         expect(body.messages.at(-1)!.content).toContain('不得凭空填写药品编号');
         return stream({ content: '请先核对本群药品资料。' });
       });
-    expect(await (await chat()).text()).not.toContain('event: draft');
+    expect(await (await chat()).text()).not.toContain('event: draft\n');
   });
 });

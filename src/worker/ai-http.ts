@@ -69,8 +69,13 @@ export interface Tool { type: 'function'; function: { name: string; description:
 export function tool(name: string, description: string, parameters: Record<string, unknown>): Tool {
   return { type: 'function', function: { name, description, parameters } };
 }
+export class LlmHttpError extends Error {
+  constructor(readonly status: number) {
+    super(`LLM 接口返回 ${status}，请检查后台配置`);
+  }
+}
 export async function complete(settings: AISettings, key: string, messages: Message[], options: {
-  tools?: Tool[]; delta?: (text: string) => Promise<void>; schema?: Record<string, unknown>;
+  tools?: Tool[]; toolChoice?: 'auto' | 'required'; delta?: (text: string) => Promise<void>; schema?: Record<string, unknown>;
 } = {}): Promise<Message> {
   const base = publicUrl(settings.base_url);
   if (base.protocol !== 'https:') throw new Error('LLM 接口必须使用 HTTPS');
@@ -81,11 +86,11 @@ export async function complete(settings: AISettings, key: string, messages: Mess
     headers: { Authorization: `Bearer ${key}`, 'Content-Type': 'application/json' },
     body: JSON.stringify({
       ...settings.extra_body, model: settings.model, messages, max_tokens: settings.max_tokens, stream: !!options.delta,
-      ...(options.tools?.length ? { tools: options.tools, tool_choice: 'auto' } : {}),
+      ...(options.tools?.length ? { tools: options.tools, tool_choice: options.toolChoice || 'auto' } : {}),
       ...(options.schema ? { response_format: { type: 'json_schema', json_schema: { name: 'medicine', strict: true, schema: options.schema } } } : {}),
     }),
   });
-  if (!r.ok) { await r.body?.cancel(); throw new Error(`LLM 接口返回 ${r.status}，请检查后台配置`); }
+  if (!r.ok) { await r.body?.cancel(); throw new LlmHttpError(r.status); }
   if (!options.delta) {
     const data = z.object({ choices: z.array(z.object({ message: z.object({
       role: z.literal('assistant'), content: z.string().nullable().optional(),
