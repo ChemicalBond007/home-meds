@@ -9,3 +9,31 @@
 .elderly p,.elderly small,.elderly .fine,.elderly .badge,.elderly .completion,.elderly .state-text,.elderly footer,.elderly .probe-result,.elderly .bubble-label{font-size:1rem!important}
 .elderly .dose-amount{font-size:2rem!important}.elderly a:not(.skip-link){display:inline-block;min-height:60px;padding-top:10px;padding-bottom:10px}.elderly .today-panel h1{margin:0}
 @media(max-width:800px){:root.elderly{font-size:22px}.elderly .sidebar nav{grid-template-columns:repeat(3,1fr)}.elderly .nav-item:nth-child(3),.elderly .nav-item:nth-child(4){display:none}.elderly .nav-item{font-size:1rem!important}.elderly .group-picker select{font-size:1rem;max-width:170px}.elderly .stock-card>p,.elderly .stock-card .actions button,.elderly .draft-card p,.elderly .expiry-panel p{font-size:1rem}.elderly .todo-info p.fine{font-size:1rem}}
+
+/* Intrinsic content widths must not turn a phone viewport into a wide page. */
+html{width:100%;min-width:0;-webkit-text-size-adjust:100%;text-size-adjust:100%}
+body{min-width:0;overflow-wrap:anywhere}
+.app,.workspace,.workspace main,.panel,.login-intro,.login-form{min-width:0}
+.home-columns>*,.chat-layout>*,.card-grid>*,.form-row>*,.quick-actions>*,
+.section-heading>*,.between>*,.family-row>span,.quick-card>span,.box-option>span{min-width:0}
+input,select,textarea{min-width:0}
+fieldset{min-width:0;max-width:100%}
+legend{max-width:100%}
+button{max-width:100%;overflow-wrap:anywhere}
+img,video,canvas{max-width:100%}
+.group-picker,.group-picker select{min-width:0}
+.group-picker{flex:0 1 240px}
+.group-picker select{flex:1;text-overflow:ellipsis}
+.box-option{max-width:100%}
+.login{grid-template-columns:repeat(2,minmax(0,1fr))}
+
+@media(max-width:800px){
+  .mobile-brand{flex-shrink:0}
+  .group-picker{flex-basis:170px}
+}
+@media(max-width:600px){
+  .form-row{grid-template-columns:minmax(0,1fr)}
+  .section-heading{flex-direction:column;align-items:stretch}
+  .quick-actions{grid-template-columns:repeat(2,minmax(0,1fr))}
+  .topbar{gap:10px;padding-inline:16px}
+}

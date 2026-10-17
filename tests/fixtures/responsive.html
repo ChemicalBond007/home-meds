@@ -1,0 +1,108 @@
+<!doctype html>
+<html lang="zh-CN"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Responsive layout regression fixture</title></head>
+<body><div id="root"></div><script type="module">
+import React from 'react';
+import { createRoot } from 'react-dom/client';
+import { App } from '/src/client/App.tsx';
+import { aiSettingsSchema } from '/src/shared/ai.ts';
+import '/src/client/styles.css';
+
+// Synthetic data only. No API request or write can reach the Worker.
+const params = new URLSearchParams(location.search), long = 'SyntheticLongIdentifier'.repeat(6);
+const user = { id: 'layout-user', username: long.slice(0, 30), role: 'admin', group_id: 'layout-group', is_elderly: Number(params.has('elderly')) };
+const family = { id: user.group_id, name: long.slice(0, 60), timezone: 'Asia/Shanghai', meal_times: '{"morning":"08:00","noon":"12:00","evening":"18:00"}' };
+const product = { id: 'layout-product', group_id: family.id, name: long, generic_name: long, manufacturer: long, specification: long,
+  indications: long, precautions: long, base_unit: '片', units_per_package: 10, sources: '[]', status: 'confirmed' };
+const box = { id: 'layout-box', group_id: family.id, product_id: product.id, warehouse_id: 'layout-warehouse', name: long,
+  warehouse_name: long, base_unit: '片', units_per_package: 10, units_remaining: 10, expiry_date: '2099-01-01', batch_number: long,
+  trace_code: '12345678901234567890', status: 'active', opened: 0, metadata_version: 0 };
+const plan = { id: 'layout-plan', group_id: family.id, user_id: user.id, username: long, product_id: product.id, medicine_name: long,
+  preferred_stock_item_id: box.id, amount: 1, unit: '片', times: '["08:00"]', weekdays: '[]', frequency: 'daily', interval_days: 1,
+  start_date: '2020-01-01', end_date: null, meal_relation: 'after', notes: long, enabled: 1, notify_family: 0,
+  created_by: user.id, updated_by: user.id, last_stock_item_id: box.id };
+const replies = {
+  '/auth/me': { user, binding_only: false }, '/groups': [family], '/members': [user, { ...user, id: 'layout-family' }],
+  '/admin/users': [user], '/products': [product], '/stock': [box], '/plans': [plan],
+  '/warehouses': [{ id: box.warehouse_id, name: long, group_id: family.id }],
+  '/today': { date: '2026-10-17', timezone: family.timezone, time: '08:00', items: [
+    { key: 'layout-todo', plan, state: 'pending', local_date: '2026-10-17', scheduled_time: '08:00' },
+  ] },
+  '/plans/layout-plan/boxes': { boxes: [box], preferred_stock_item_id: box.id, last_stock_item_id: box.id },
+  '/auth/recovery': { remaining: 10, totp: true, passkeys: 0 },
+  '/ai/settings': { settings: aiSettingsSchema.parse({}), has_llm_key: false, has_tavily_key: false },
+};
+const originalFetch = window.fetch.bind(window);
+window.fetch = async (input, init = {}) => {
+  const url = new URL(typeof input === 'string' ? input : input.url, location.href);
+  if (!url.pathname.startsWith('/api/')) return originalFetch(input, init);
+  if (init.method && init.method !== 'GET') throw new Error('Writes are disabled in layout tests.');
+  if (params.has('login') && url.pathname === '/api/auth/me') return Response.json({ error: 'Synthetic signed-out state' }, { status: 401 });
+  const path = url.pathname.slice(4);
+  if (path === '/admin/logs') return Response.json({ items: [], next_cursor: null });
+  if (!(path in replies)) throw new Error(`Missing synthetic reply: ${path}`);
+  return Response.json(replies[path]);
+};
+createRoot(document.getElementById('root')).render(React.createElement(App));
+
+const settle = () => new Promise(resolve => setTimeout(resolve, 25));
+const waitFor = async (doc, selector) => {
+  const until = Date.now() + 5000;
+  while (!doc.querySelector(selector)) {
+    if (Date.now() > until) throw new Error(`Timed out waiting for ${selector}`);
+    await settle();
+  }
+  await settle();
+};
+window.runResponsiveChecks = async (widths = [320, 360, 390, 600, 768, 800, 820, 1024, 1440]) => {
+  const results = [];
+  for (const mode of ['normal', 'elderly', 'login']) for (const width of widths) {
+    const frame = document.createElement('iframe');
+    frame.style.cssText = `position:fixed;left:0;top:0;width:${width}px;height:844px;border:0;visibility:hidden`;
+    frame.src = `${location.pathname}?embedded=1${mode === 'normal' ? '' : `&${mode}=1`}`;
+    document.body.append(frame);
+    try {
+      await new Promise((resolve, reject) => { frame.onload = resolve; frame.onerror = reject; });
+      const doc = frame.contentDocument;
+      await waitFor(doc, mode === 'login' ? '.login-form' : '.quick-actions');
+      const measure = page => {
+        const viewport = doc.documentElement.clientWidth, dialog = doc.querySelector('dialog[open]');
+        const overflow = [...doc.querySelectorAll('body *')].flatMap(el => {
+          const rect = el.getBoundingClientRect();
+          return rect.width && (rect.right > viewport + 1 || rect.left < -1) ? [el.className || el.tagName] : [];
+        });
+        const twoColumnFormOnPhone = width <= 600 && [...doc.querySelectorAll('.form-row')].some(el =>
+          el.getBoundingClientRect().width && getComputedStyle(el).gridTemplateColumns.split(' ').length > 1);
+        results.push({ mode, width, page, viewport, scrollWidth: doc.documentElement.scrollWidth, twoColumnFormOnPhone,
+          overflow: overflow.slice(0, 8), dialogOverflow: dialog ? dialog.scrollWidth > dialog.clientWidth + 1 : false,
+          mobileNavigation: getComputedStyle(doc.querySelector('.sidebar') || doc.body).position === 'fixed'
+            && (doc.querySelector('.sidebar')?.getBoundingClientRect().width || 0) >= viewport - 1 });
+      };
+      if (mode === 'login') { measure('login'); continue; }
+      measure('home');
+      doc.querySelector('.dose-check').click(); await waitFor(doc, 'dialog[open] input[type=datetime-local]'); measure('dose');
+      doc.querySelector('dialog[open] form button.full').click(); await waitFor(doc, 'dialog[open] .box-option'); measure('dose-boxes');
+      doc.querySelector('dialog[open] .modal-heading button').click(); await settle();
+      const nav = doc.querySelectorAll('.sidebar nav button');
+      for (const [index, page, selector] of [[1, 'inventory', '.stock-card'], [2, 'plans', '.times'], [3, 'chat', '.chat-layout'], [4, 'settings', '.segmented']]) {
+        nav[index].click(); await waitFor(doc, selector); measure(page);
+        if (page === 'plans') {
+          doc.querySelector('.section-heading>button').click(); await waitFor(doc, 'dialog[open] input[type=date]'); measure('plan-editor');
+          doc.querySelector('dialog[open] .modal-heading button').click(); await settle();
+        }
+        if (page === 'inventory') {
+          doc.querySelector('.section-heading>button').click(); await waitFor(doc, 'dialog[open] fieldset'); measure('intake');
+          doc.querySelector('dialog[open] .modal-heading button').click(); await settle();
+        }
+        if (page === 'settings') {
+          [...doc.querySelectorAll('.segmented button')].find(b => b.textContent === 'AI 配置').click();
+          await waitFor(doc, '.panel textarea'); measure('ai-settings');
+        }
+      }
+    } finally { frame.remove(); }
+  }
+  window.responsiveResults = results;
+  return { cases: results.length, failures: results.filter(r => r.scrollWidth > r.viewport + 1 || r.overflow.length || r.dialogOverflow
+      || r.twoColumnFormOnPhone || r.page === 'home' && (r.width <= 800 ? !r.mobileNavigation : r.mobileNavigation)),
+    desktop: results.filter(r => r.width === 1440 && r.page === 'home').map(r => ({ mode: r.mode, mobileNavigation: r.mobileNavigation })) };
+};
+</script></body></html>
