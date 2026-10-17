@@ -74,28 +74,39 @@ export class LlmHttpError extends Error {
     super(`LLM 接口返回 ${status}，请检查后台配置`);
   }
 }
+export async function providerRequest(settings: AISettings, key: string, path: string, body?: Record<string, unknown>, anthropic = false) {
+  const base = publicUrl(settings.base_url);
+  if (base.protocol !== 'https:') throw new Error('LLM 接口必须使用 HTTPS');
+  if (base.search || base.hash) throw new Error('LLM 根地址不能带查询参数或锚点');
+  const r = await fetch(`${base.href.replace(/\/+$/, '')}${path}`, {
+    method: body ? 'POST' : 'GET', redirect: 'manual', signal: AbortSignal.timeout(settings.timeout_seconds * 1000),
+    headers: { ...(anthropic ? { 'x-api-key': key, 'anthropic-version': '2023-06-01' } : { Authorization: `Bearer ${key}` }),
+      ...(body ? { 'Content-Type': 'application/json' } : {}), Accept: 'application/json' },
+    body: body ? JSON.stringify(body) : undefined,
+  });
+  if (!r.ok) { await r.body?.cancel(); throw new LlmHttpError(r.status); }
+  return r;
+}
+export async function providerJson(response: Response): Promise<unknown> {
+  const body = await readBounded(response);
+  try { return JSON.parse(body); } catch { throw new Error('LLM 接口没有返回有效 JSON'); }
+}
 export async function complete(settings: AISettings, key: string, messages: Message[], options: {
   tools?: Tool[]; toolChoice?: 'auto' | 'required'; delta?: (text: string) => Promise<void>; schema?: Record<string, unknown>;
 } = {}): Promise<Message> {
-  const base = publicUrl(settings.base_url);
-  if (base.protocol !== 'https:') throw new Error('LLM 接口必须使用 HTTPS');
-  const endpoint = `${base.href.replace(/\/$/, '')}/chat/completions`;
-  // A 3xx is never followed (it fails the ok check below), so the key only reaches the configured host.
-  const r = await fetch(endpoint, {
-    method: 'POST', redirect: 'manual', signal: AbortSignal.timeout(settings.timeout_seconds * 1000),
-    headers: { Authorization: `Bearer ${key}`, 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      ...settings.extra_body, model: settings.model, messages, max_tokens: settings.max_tokens, stream: !!options.delta,
+  // Search is isolated to public medicine retrieval, not private plan chats or formatting.
+  const extra = { ...settings.extra_body };
+  delete extra.enable_search; delete extra.search_options; delete extra.web_search_options;
+  const r = await providerRequest(settings, key, '/chat/completions', {
+      ...extra, model: settings.model, messages, max_tokens: settings.max_tokens, stream: !!options.delta,
       ...(options.tools?.length ? { tools: options.tools, tool_choice: options.toolChoice || 'auto' } : {}),
       ...(options.schema ? { response_format: { type: 'json_schema', json_schema: { name: 'medicine', strict: true, schema: options.schema } } } : {}),
-    }),
   });
-  if (!r.ok) { await r.body?.cancel(); throw new LlmHttpError(r.status); }
   if (!options.delta) {
     const data = z.object({ choices: z.array(z.object({ message: z.object({
       role: z.literal('assistant'), content: z.string().nullable().optional(),
       tool_calls: z.array(z.object({ id: z.string(), type: z.literal('function'), function: z.object({ name: z.string(), arguments: z.string() }) })).max(5).optional(),
-    }) })).min(1) }).parse(JSON.parse(await readBounded(r)));
+    }) })).min(1) }).parse(await providerJson(r));
     return { ...data.choices[0].message, content: data.choices[0].message.content || null };
   }
   if (!r.body) throw new Error('LLM 没有返回内容');

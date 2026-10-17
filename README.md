@@ -82,9 +82,19 @@ npm run admin:create -- 管理员名字
 - 模型 `qwen3.5-27b`
 - 额外参数 `{"enable_thinking":false}`
 - 工具调用，提示词约束输出；可选预检索、json_schema，不提供 json_object
-- Tavily 必需；DuckDuckGo 默认关闭，需在部署后的后台检测后再决定是否开启
+- 旧配置仍默认外部 Tavily 搜索，需配置 Tavily 密钥；DuckDuckGo 默认关闭
 - 每群每天查询 20 次，管理员查询不限额；每人每天对话 50 轮，可由后台调整
 - 一次查询最多 6 次 LLM 请求（包括唯一一次格式修复）、5 次工具调用；对话每轮最多 5 次工具调用、6 次 LLM 请求
+
+提供商可选择「DeepSeek（官方）」或「其他 LLM」。DeepSeek 固定使用 `https://api.deepseek.com`，不需要填写根地址；输入该提供商的 API 密钥后，页面自动从 `/models` 获取可选模型，不硬编码模型名单。其他 LLM 仍可手填 OpenAI 兼容地址与模型，也可点击获取模型列表。模型获取和内置搜索检测可以使用尚未保存的密钥，不会因此保存密钥；切换提供商或根地址后不会自动复用或发送原有密钥，需输入对应的新密钥。
+
+选择 DeepSeek 时默认选择内置搜索，管理员可手动改回外部搜索。DeepSeek 药品检索使用官方兼容 Anthropic 的 `/anthropic/v1/messages` 服务端 `web_search` 工具，并解析 `web_search_tool_result` / 引用；普通整理和计划对话仍走 Chat Completions。依据：[DeepSeek Anthropic 兼容说明](https://api-docs.deepseek.com/guides/anthropic_api/)、[官方 Web Search 说明](https://api-docs.deepseek.com/quick_start/agent_integrations/claude_code/)。模型、账号是否支持仍需实际检测，模型名称或网页端能联网不能证明 API 支持。
+
+其他 LLM 可以手动选择内置搜索，也可点击「检测内置搜索并自动选择搜索来源」。检测优先使用所选协议，再尝试 Responses `web_search` 或 Chat Completions 联网参数，最多 3 次模型请求；可手选 Anthropic 服务端搜索协议。默认 Chat Completions 传 `enable_search=true`；填写「内置搜索专用参数」JSON 后不再添加这个默认开关，例如支持 `web_search_options` 的接口可填 `{"web_search_options":{}}`。网关必须同时支持原有 Chat Completions 整理与计划对话；只提供 Responses 或 Anthropic 的服务不在当前范围。
+
+检测只有取得接口返回的结构化检索来源才选择内置搜索，接受 Responses/Chat 的引用、`citations` / `search_results`，以及 Anthropic 的搜索结果块；不接受仅在模型正文中声称联网或列出网址。来源经过公开地址检查，但不能证明引用页面支持全部药品事实，仍须人工核对。无法确认能力时选择外部 Tavily；鉴权、限流、网络或服务故障不改变当前选择。检测只更新页面中的草稿，**保存配置后才生效**。检测会产生模型和搜索费用，不发送家庭药箱或计划资料。
+
+启用内置搜索后，药品查询和后台接口检测都不会调用 Tavily / DuckDuckGo，不要求 Tavily 密钥；外部工具调用和预检索方式被忽略，保存时 DuckDuckGo 自动关闭。已有 Tavily 密钥保留加密存储，切回外部模式后可继续使用。正式查询若内置搜索失败或未返回来源，会明确报错，**不会隐式回退到外部 API**。检索和一次格式修复共用原有 LLM 请求预算，返回结果仍须人工确认，不直接写入药品库。内置搜索专用参数只用于公开药品检索，不加入私人计划对话或后续 JSON 整理请求。
 
 `fetch_page` 每次 10 秒，逐跳检查公开 HTTP/HTTPS 地址，不允许私网 IP、凭证网址、本地域名和非标准端口。读取最多 2MB，提取文字后截断到 20KB。仅允许读取本轮搜索结果中的网址。搜索资料和网页均作为不可信数据处理。
 
@@ -96,7 +106,7 @@ npm run admin:create -- 管理员名字
 
 对话助手通过 `find_medicines` 只读检索本群药名、通用名、厂家、规格和资料关键词；无法字面匹配俗称或口语时，用 `list_medicines` 分页读取真实目录，由 LLM 对资料进行语义比对，而不是要求用户输入正式名称。每页最多 20 种，说明文字限长，返回真实编号、规格和在库量；在库量不代表未过期或适合服用。这里不提供向量检索或任意 SQL 执行，也不开放其他群组、账号或密钥表。数据库文字是不可信资料，多个候选或规格不明时必须请用户核对，不得凭症状推荐选药。新草稿只能引用本轮工具读到的药品编号，并强制采用数据库正式药名。
 
-接口能力测试不会自动改动配置，也不会保存查询结果。探测脚本：
+「检测接口能力（使用已保存配置）」不会自动改动配置，也不会保存查询结果；与上述更新设置草稿的内置搜索检测分开。探测脚本：
 
 ```powershell
 npm run probe:ai

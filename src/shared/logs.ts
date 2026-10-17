@@ -20,6 +20,7 @@ export const logActions: Record<string, string> = {
   'dose.create': '记录服药或跳过', 'dose.undo': '撤销服药记录', 'dose.record': '服药记录',
   'ai.settings.read': '查看 AI 配置', 'ai.settings.update': '修改 AI 配置',
   'ai.probe': '检测接口能力', 'ai.lookup': 'AI 药品查询', 'ai.chat': 'AI 计划对话',
+  'ai.models': '获取 LLM 模型列表', 'ai.search.probe': '检测提供商内置搜索',
   'usage.lookup': '家庭药品查询用量', 'usage.chat': '个人对话用量',
   'push.subscribe': '开启设备提醒', 'push.unsubscribe': '关闭设备提醒',
   'logs.view': '查看使用日志', 'request.other': '其他写入请求',

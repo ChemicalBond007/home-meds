@@ -3,13 +3,9 @@ import { api, sse } from './api';
 import { Confirm, Message, Modal, errorText, useLoad } from './components';
 import { Security } from './Auth';
 import { AdminLogs } from './AdminLogs';
+import { AISettings } from './AISettings';
 import type { User, FamilyGroup } from '../shared/types';
 import type { Warehouse } from './Inventory';
-interface AIConfig {
-  base_url: string; model: string; extra_body: Record<string, unknown>; query_mode: string; output_mode: string;
-  duckduckgo_enabled: boolean; lookup_daily_limit: number; chat_daily_limit: number;
-  max_llm_calls: number; max_tool_calls: number; max_tokens: number; timeout_seconds: number;
-}
 function unb64(s: string) { return Uint8Array.from(atob(s.replaceAll('-', '+').replaceAll('_', '/')), c => c.charCodeAt(0)); }
 export function SettingsPage({ user, family, groups, members, warehouses, changed, logout }: {
   user: User; family?: FamilyGroup; groups: FamilyGroup[]; members: User[]; warehouses: Warehouse[]; changed: () => void; logout: () => void;
@@ -61,7 +57,7 @@ export function SettingsPage({ user, family, groups, members, warehouses, change
         await api('/auth/logout', 'POST', {}); logout();
       })}>退出登录</button></section>
     </>}
-    {tab === 'ai' && user.role === 'admin' && <AISettings />}
+    {tab === 'ai' && user.role === 'admin' && <AISettings><TestLookup /></AISettings>}
     {tab === 'logs' && user.role === 'admin' && <AdminLogs groups={groups} users={users.data || []} usersError={users.error} />}
     {tab === 'family' && user.role === 'admin' && <>
       <section className="panel"><div className="between"><h2>群组与分组码</h2><button onClick={() => edit()}>新建群组</button></div>
@@ -93,44 +89,6 @@ export function SettingsPage({ user, family, groups, members, warehouses, change
     }}><Message warning>会撤销此管理员的所有会话、通行密钥、验证器和旧恢复码。确认后安全转交新的临时密码。</Message></Confirm>}
     {temporary && <Modal title="请安全转交临时密码" close={() => setTemporary('')}><p>仅显示在这里，7 天有效。对方必须重新绑定验证方式。</p><code className="secret">{temporary}</code><button onClick={() => setTemporary('')}>已安全保存，关闭</button></Modal>}
   </>;
-}
-function AISettings() {
-  const load = useLoad<{ settings: AIConfig; has_llm_key: boolean; has_tavily_key: boolean }>('/ai/settings');
-  const [d, setD] = useState<AIConfig>(), [extra, setExtra] = useState(''), [llmKey, setLlmKey] = useState(''), [searchKey, setSearchKey] = useState('');
-  const [message, setMessage] = useState(''), [error, setError] = useState(''), [busy, setBusy] = useState(false), [probe, setProbe] = useState<unknown>();
-  const config = d || load.data?.settings;
-  if (!config) return <Message warning={!!load.error}>{load.error || '正在读取配置…'}</Message>;
-  const patch = (p: Partial<AIConfig>) => setD({ ...config, ...p });
-  return <section className="panel"><h2>AI 与搜索配置</h2><p>正式密钥只会加密保存到 D1，不会回传。留空表示保留已有密钥。</p>
-    <form onSubmit={e => {
-      e.preventDefault(); setBusy(true); setError(''); setMessage('');
-      (async () => {
-        const settings = { ...config, extra_body: extra ? JSON.parse(extra) : config.extra_body };
-        await api('/ai/settings', 'PUT', { settings, llm_key: llmKey || undefined, tavily_key: searchKey || undefined });
-        setLlmKey(''); setSearchKey(''); setMessage('配置已保存'); load.reload();
-      })().catch(e => setError(errorText(e))).finally(() => setBusy(false));
-    }}>
-      <label>OpenAI 兼容接口根地址<input type="url" value={config.base_url} required onChange={e => patch({ base_url: e.target.value })} /></label>
-      <label>模型<input value={config.model} required maxLength={100} onChange={e => patch({ model: e.target.value })} /></label>
-      <label>LLM 密钥（{load.data?.has_llm_key ? '已设置' : '未设置'}）<input type="password" value={llmKey} onChange={e => setLlmKey(e.target.value)} autoComplete="new-password" /></label>
-      <label>Tavily 密钥，药品查询必需（{load.data?.has_tavily_key ? '已设置' : '未设置'}）<input type="password" value={searchKey} onChange={e => setSearchKey(e.target.value)} autoComplete="new-password" /></label>
-      <label>额外请求参数（JSON）<textarea value={extra || JSON.stringify(config.extra_body, null, 2)} onChange={e => setExtra(e.target.value)} spellCheck={false} /></label>
-      <div className="form-row"><label>查询模式<select value={config.query_mode} onChange={e => patch({ query_mode: e.target.value })}><option value="tools">工具调用（默认）</option><option value="prefetch">预检索</option></select></label>
-        <label>输出格式<select value={config.output_mode} onChange={e => patch({ output_mode: e.target.value })}><option value="prompt">提示词约束（默认）</option><option value="json_schema">json_schema（可选）</option></select></label></div>
-      <label className="check"><input type="checkbox" checked={config.duckduckgo_enabled} onChange={e => patch({ duckduckgo_enabled: e.target.checked })} />启用 DuckDuckGo（先在 Worker 检测，默认关闭）</label>
-      <div className="form-row">{(['lookup_daily_limit', 'chat_daily_limit', 'max_llm_calls', 'max_tool_calls', 'max_tokens', 'timeout_seconds'] as const).map(key => <label key={key}>{({
-        lookup_daily_limit: '每群每天药品查询次数', chat_daily_limit: '每人每天对话轮数', max_llm_calls: '查询最多 LLM 轮数（3–6）',
-        max_tool_calls: '查询最多工具次数（1–5）', max_tokens: '最大输出 tokens', timeout_seconds: 'LLM 超时（秒）',
-      })[key]}<input type="number" value={config[key]} min="1" onChange={e => patch({ [key]: Number(e.target.value) })} required /></label>)}</div>
-      {error && <Message warning>{error}</Message>}{message && <Message>{message}</Message>}
-      <div className="actions"><button disabled={busy}>保存 AI 配置</button><button type="button" className="secondary" disabled={busy} onClick={() => {
-        setBusy(true); setError(''); setProbe(undefined);
-        api('/ai/probe', 'POST', {}).then(setProbe).catch(e => setError(errorText(e))).finally(() => setBusy(false));
-      }}>{busy ? '正在处理…' : '检测接口能力（使用已保存配置）'}</button></div>
-    </form>
-    {probe !== undefined && <pre className="probe-result">{JSON.stringify(probe, null, 2)}</pre>}
-    <TestLookup />
-  </section>;
 }
 function TestLookup() {
   const [query, setQuery] = useState(''), [result, setResult] = useState<unknown>(), [progress, setProgress] = useState(''), [busy, setBusy] = useState(false), [error, setError] = useState('');

@@ -36,6 +36,8 @@ const policies: Policy[] = [
   ['GET', '/ai/settings', 'ai.settings.read', 'global'],
   ['PUT', '/ai/settings', 'ai.settings.update', 'global'],
   ['POST', '/ai/probe', 'ai.probe', 'global'],
+  ['POST', '/ai/models', 'ai.models', 'global'],
+  ['POST', '/ai/search-probe', 'ai.search.probe', 'global'],
   ['POST', '/ai/lookup', 'ai.lookup', 'group'],
   ['POST', '/ai/chat', 'ai.chat', 'group'],
   ['POST', '/push/subscribe', 'push.subscribe', 'account'],
