@@ -26,6 +26,7 @@ const policies: Policy[] = [
   ['POST', '/products', 'product.create', 'group'],
   ['PUT', '/products/:id', 'product.update', 'group'],
   ['POST', '/stock', 'stock.create', 'group'],
+  ['PUT', '/stock/:id', 'stock.update', 'group'],
   ['POST', '/stock/:id/move', 'stock.change', 'group'],
   ['POST', '/plans', 'plan.create', 'group'],
   ['PUT', '/plans/:id', 'plan.update', 'group'],

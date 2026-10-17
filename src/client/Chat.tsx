@@ -43,7 +43,7 @@ export function ChatPage({ user, family, members, products, changed }: {
     <div className="section-heading"><div><p className="eyebrow">A LITTLE HELP, ALWAYS</p><h1>对话助手</h1><p className="muted">把计划说出来，再一起确认。</p></div></div>
     <div className="chat-layout"><section className="panel chat-main">
       <label>给谁记录计划<select value={target} disabled={busy} onChange={e => { setTarget(e.target.value); setMessages([]); setProposals([]); setError(''); }}>{members.map(m => <option value={m.id} key={m.id}>{m.username}</option>)}</select></label>
-      <Message>只负责记录，不给用药建议。时间或用量不清楚时会追问，点击确认卡片才保存。</Message>
+      <Message>可以用简称或口语描述药品，助手会只读查询本家庭药品资料；不确定时请核对药盒。只负责记录，不给用药建议。时间或用量不清楚时会追问，点击确认卡片才保存。</Message>
       <div className="chat-messages" aria-live="polite" aria-relevant="additions text">
         {!messages.length && <Empty title="今天要记下什么？">例如：帮我记录每天早上八点吃一片某某药。</Empty>}
         {messages.map((m, i) => <div key={i} className={`bubble ${m.role}`}><span className="bubble-label">{m.role === 'user' ? '我' : '记录助手'}</span><p>{clean(m.content) || (busy && i === messages.length - 1 ? '正在整理…' : '请查看下方确认卡片。')}</p></div>)}

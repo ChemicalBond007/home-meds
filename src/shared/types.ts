@@ -36,7 +36,9 @@ export interface StockItem {
   base_unit: string;
   trace_code: string | null;
   batch_number: string | null;
+  serial_number: string | null;
   expiry_date: string | null;
+  metadata_version: number;
   opened: number;
   units_per_package: number;
   units_remaining: number;

@@ -3,12 +3,14 @@ import { z } from 'zod';
 import { api, sse } from './api';
 import { Confirm, Empty, Message, Modal, Speak, errorText, useLoad } from './components';
 import { Scanner } from './Scanner';
-import { productSchema } from '../shared/schemas';
+import { productSchema, stockMetadataSchema } from '../shared/schemas';
+import { NumberInput, enteredAmount, enteredPackages } from './NumberInput';
 import { localClock, dayNumber } from '../shared/schedule';
 import type { Product, StockItem, FamilyGroup, User } from '../shared/types';
 import type { ParsedCode } from '../shared/barcode';
 export type Warehouse = { id: string; name: string; group_id: string };
-export type ProductDraft = z.infer<typeof productSchema>;
+export type ProductDraft = Omit<z.infer<typeof productSchema>, 'units_per_package'> & { units_per_package: string | number };
+export const parseProductDraft = (d: ProductDraft) => productSchema.parse({ ...d, units_per_package: enteredAmount.parse(d.units_per_package) });
 const blank: ProductDraft = { name: '', generic_name: null, manufacturer: null, specification: null, indications: null, precautions: null, base_unit: '片', units_per_package: 1, sources: [], status: 'confirmed' };
 export function Sources({ sources }: { sources: { title: string; url: string }[] }) {
   return sources.length > 0 ? <div className="sources"><h3>资料来源，请打开核对</h3>{sources.map((s, i) => /^https?:\/\//.test(s.url) ? <a href={s.url} key={i} target="_blank" rel="noopener noreferrer">{s.title || s.url} ↗</a> : null)}</div> : null;
@@ -18,12 +20,16 @@ export function ProductFields({ value: d, set }: { value: ProductDraft; set: (d:
   return <>
     <label>药品名称<input value={d.name} required maxLength={200} onChange={e => patch('name', e.target.value)} /></label>
     <div className="form-row"><label>基本单位<input value={d.base_unit} required maxLength={20} onChange={e => patch('base_unit', e.target.value)} /></label>
-      <label>每盒数量<input type="number" min="0.001" step="0.001" max="100000" value={d.units_per_package} required onChange={e => patch('units_per_package', Number(e.target.value))} /></label></div>
+      <label>每盒数量<NumberInput min="0.001" step="0.001" max="100000" value={d.units_per_package} required onValue={value => patch('units_per_package', value)} /></label></div>
     {(['generic_name', 'manufacturer', 'specification'] as const).map(key => <label key={key}>{({ generic_name: '通用名', manufacturer: '生产厂家', specification: '规格' })[key]}<input value={d[key] || ''} maxLength={key === 'generic_name' ? 200 : 300} onChange={e => patch(key, e.target.value || null)} /></label>)}
     <label>适应症（只抄录资料）<textarea value={d.indications || ''} maxLength={4000} onChange={e => patch('indications', e.target.value || null)} /></label>
     <label>注意事项<textarea value={d.precautions || ''} maxLength={4000} onChange={e => patch('precautions', e.target.value || null)} /></label>
     <label className="check"><input type="checkbox" checked={d.status === 'pending'} onChange={e => patch('status', e.target.checked ? 'pending' : 'confirmed')} />先存下，让家人补充（待补充药品）</label>
-    <Sources sources={d.sources} />
+    <fieldset><legend>资料来源</legend>{d.sources.map((source, i) => <div key={i}>
+      <label>来源 {i + 1} 标题<input value={source.title} maxLength={300} onChange={e => patch('sources', d.sources.map((s, n) => n === i ? { ...s, title: e.target.value } : s))} /></label>
+      <label>来源 {i + 1} 网址<input type="url" value={source.url} required onChange={e => patch('sources', d.sources.map((s, n) => n === i ? { ...s, url: e.target.value } : s))} /></label>
+      <button type="button" className="plain" onClick={() => patch('sources', d.sources.filter((_, n) => n !== i))}>移除来源 {i + 1}</button>
+    </div>)}<button type="button" className="secondary" disabled={d.sources.length >= 20} onClick={() => patch('sources', [...d.sources, { title: '', url: '' }])}>添加资料来源</button></fieldset>
   </>;
 }
 export function Intake({ defaultCode = '', products, warehouses, close, saved }: {
@@ -31,12 +37,12 @@ export function Intake({ defaultCode = '', products, warehouses, close, saved }:
 }) {
   const [code, setCode] = useState(defaultCode), [productId, setProductId] = useState(''), [draft, setDraft] = useState<ProductDraft>(blank);
   const [warehouse, setWarehouse] = useState(warehouses[0]?.id || ''), [expiry, setExpiry] = useState(''), [batch, setBatch] = useState('');
-  const [packages, setPackages] = useState(1), [size, setSize] = useState(1), [query, setQuery] = useState(''), [progress, setProgress] = useState('');
+  const [packages, setPackages] = useState('1'), [size, setSize] = useState('1'), [query, setQuery] = useState(''), [progress, setProgress] = useState('');
   const [error, setError] = useState(''), [busy, setBusy] = useState(false), [scanning, setScanning] = useState(false), [aiBusy, setAiBusy] = useState(false);
   const [aiFilled, setAiFilled] = useState(false), [duplicate, setDuplicate] = useState(false);
   const choose = (id: string) => {
     setProductId(id); const p = products.find(p => p.id === id);
-    if (p) setSize(p.units_per_package);
+    if (p) setSize(String(p.units_per_package));
   };
   const resolve = useCallback(async (raw: string) => {
     setCode(raw); setError(''); setProgress('正在查找本群药品和缓存…');
@@ -44,9 +50,9 @@ export function Intake({ defaultCode = '', products, warehouses, close, saved }:
     try {
       const r = await api<{ parsed: ParsedCode; product: Product | null; box: unknown; cache: Partial<ProductDraft> | null }>(`/codes/resolve?code=${encodeURIComponent(raw)}`);
       if (r.box) { setDuplicate(true); setError('这盒追溯码已入库，不能再次添加。'); }
-      if (r.product) { setProductId(r.product.id); setSize(r.product.units_per_package); }
+      if (r.product) { setProductId(r.product.id); setSize(String(r.product.units_per_package)); }
       else if (r.cache) {
-        const data = { ...blank, ...r.cache }; setDraft(data); setSize(data.units_per_package || 1); setAiFilled(true);
+        const data = { ...blank, ...r.cache }; setDraft(data); setSize(String(data.units_per_package || 1)); setAiFilled(true);
       }
       setExpiry(r.parsed.expiry_date || ''); setBatch(r.parsed.batch_number || '');
       setProgress(r.product ? '已找到本群药品，请核对药盒。' : r.cache ? '已找到全局缓存，仅预填，请对照药盒确认。' : '未找到药品，可用 AI 查询或手动填写。');
@@ -62,7 +68,7 @@ export function Intake({ defaultCode = '', products, warehouses, close, saved }:
         if (event === 'result') {
           const r = data as Partial<ProductDraft>;
           const next = { ...blank, ...r, name: r.name || '', base_unit: r.base_unit || '片', units_per_package: r.units_per_package || 1 };
-          setDraft(next); setSize(next.units_per_package); setAiFilled(true); setProgress('AI 已预填，请逐项核对，不会自动保存。');
+          setDraft(next); setSize(String(next.units_per_package)); setAiFilled(true); setProgress('AI 已预填，请逐项核对，不会自动保存。');
         }
       });
     } catch (e) { setError(errorText(e)); } finally { setAiBusy(false); }
@@ -73,14 +79,15 @@ export function Intake({ defaultCode = '', products, warehouses, close, saved }:
       e.preventDefault(); setBusy(true); setError('');
       (async () => {
         if (duplicate) throw new Error('这盒已入库，请取消或更换药盒码');
+        const quantity = enteredAmount.parse(productId ? size : draft.units_per_package), packageCount = enteredPackages.parse(packages);
         let id = productId;
         if (!id) {
-          const parsed = productSchema.parse({ ...draft, code: code || undefined });
+          const parsed = parseProductDraft({ ...draft, code: code || undefined });
           const r = await api<{ id: string }>('/products', 'POST', parsed);
-          id = r.id; setProductId(id); setSize(parsed.units_per_package);
+          id = r.id; setProductId(id); setSize(String(parsed.units_per_package));
         }
         await api('/stock', 'POST', { product_id: id, warehouse_id: warehouse, code: code || undefined, expiry_date: expiry || null,
-          batch_number: batch || null, packages, units_per_package: productId ? size : draft.units_per_package });
+          batch_number: batch || null, packages: packageCount, units_per_package: quantity });
         saved(); close();
       })().catch(e => setError(errorText(e))).finally(() => setBusy(false));
     }}>
@@ -99,8 +106,8 @@ export function Intake({ defaultCode = '', products, warehouses, close, saved }:
       <hr /><h3>这盒药放在哪里</h3>
       <label>药箱<select value={warehouse} onChange={e => setWarehouse(e.target.value)} required><option value="" disabled>请选择药箱</option>{warehouses.map(w => <option key={w.id} value={w.id}>{w.name}</option>)}</select></label>
       <div className="form-row"><label>有效期<input type="date" value={expiry} onChange={e => setExpiry(e.target.value)} /></label><label>批号<input value={batch} maxLength={100} onChange={e => setBatch(e.target.value)} /></label></div>
-      <div className="form-row"><label>盒数<input type="number" min="1" max="100" value={packages} required onChange={e => setPackages(Number(e.target.value))} /></label>
-        {productId && <label>每盒数量<input type="number" min="0.001" max="100000" step="0.001" value={size} required onChange={e => setSize(Number(e.target.value))} /></label>}</div>
+      <div className="form-row"><label>盒数<NumberInput min="1" max="100" step="1" value={packages} required onValue={setPackages} /></label>
+        {productId && <label>每盒数量<NumberInput min="0.001" max="100000" step="0.001" value={size} required onValue={setSize} /></label>}</div>
       <p className="fine">有追溯码时一次只能入库一盒。每盒单独管理剩余数量。</p>
       {error && <Message warning>{error}</Message>}<button type="submit" className="full" disabled={busy || aiBusy || duplicate || !warehouse}>{busy ? '正在保存…' : productId ? '确认这盒信息，放进药箱' : '已核对药品信息，创建并入库'}</button>
     </form>
@@ -111,11 +118,12 @@ export function InventoryPage({ family, user, products, warehouses, version, cha
 }) {
   const { data, error } = useLoad<StockItem[]>('/stock', `${family.id}:${version}`);
   const [tab, setTab] = useState('stock'), [filter, setFilter] = useState(''), [editing, setEditing] = useState<Product>();
+  const [boxEditing, setBoxEditing] = useState<StockItem>(), [stockStatus, setStockStatus] = useState('active');
   const [operation, setOperation] = useState<{ box: StockItem; type: 'out' | 'discard' | 'move' }>();
   const [amount, setAmount] = useState(1), [to, setTo] = useState(warehouses[0]?.id || ''), [actionError, setActionError] = useState('');
-  const [busy, setBusy] = useState(false), [editDraft, setEditDraft] = useState<ProductDraft>(blank);
+  const [busy, setBusy] = useState(false);
   const clock = localClock(new Date(), family.timezone);
-  const visible = data?.filter(s => s.status === 'active' && s.name.includes(filter));
+  const visible = data?.filter(s => (user.role === 'admin' && stockStatus === 'all' || s.status === (user.role === 'admin' ? stockStatus : 'active')) && s.name.includes(filter));
   return <>
     <div className="section-heading"><div><p className="eyebrow">FAMILY MEDICINE CABINET</p><h1>我的药箱</h1><p className="muted">每一盒放在哪里，还剩多少，一目了然。</p></div><button onClick={() => openIntake({})}>＋ 放进药箱</button></div>
     <div className="stats"><div><strong>{data?.filter(s => s.status === 'active').length ?? '—'}</strong><span>盒在药箱</span></div><div><strong>{products.length}</strong><span>种药品</span></div><div><strong>{data?.filter(s => s.status === 'active' && s.expiry_date && dayNumber(s.expiry_date) - dayNumber(clock.date) <= 30).length ?? '—'}</strong><span>盒过期或临期</span></div></div>
@@ -123,6 +131,7 @@ export function InventoryPage({ family, user, products, warehouses, version, cha
     {error && <Message warning>{error}</Message>}
     {tab === 'stock' ? <>
       <label className="search-label">查找药品<input type="search" value={filter} onChange={e => setFilter(e.target.value)} placeholder="输入药品名称" /></label>
+      {user.role === 'admin' && <label>药盒状态<select value={stockStatus} onChange={e => setStockStatus(e.target.value)}><option value="active">在库</option><option value="empty">已用完</option><option value="discarded">已报废</option><option value="all">全部药盒</option></select></label>}
       {visible?.length === 0 && <Empty title={filter ? '没找到这种药' : '药箱还是空的'}>点「放进药箱」，添加第一盒药。</Empty>}
       <div className="card-grid">{visible?.map(s => {
         const days = s.expiry_date ? dayNumber(s.expiry_date) - dayNumber(clock.date) : null;
@@ -130,15 +139,16 @@ export function InventoryPage({ family, user, products, warehouses, version, cha
           <h2>{s.name}</h2><div className="dose-amount">{s.units_remaining}<span> {s.base_unit} 剩余</span></div>
           <p>1 盒 · 每盒 {s.units_per_package} {s.base_unit}</p><div className="stock-meter"><span style={{ width: `${Math.min(100, s.units_remaining / s.units_per_package * 100)}%` }} /></div>
           <p className={days !== null && days <= 30 ? 'expiry-warning' : 'muted'}>{days === null ? '有效期未填写' : days < 0 ? `⚠ 已过期 · ${s.expiry_date}` : days <= 30 ? `⚠ 临近到期 · ${s.expiry_date}` : `有效期 ${s.expiry_date}`}</p>
-          <p className="fine">药盒 {s.trace_code || s.id.slice(-8)}</p>
-          <div className="actions"><button className="secondary" onClick={() => { setOperation({ box: s, type: 'out' }); setAmount(1); setActionError(''); }}>用掉了</button>
+          <p className="fine">批号 {s.batch_number || '未填写'} · 药盒 {s.trace_code || s.id.slice(-8)}{s.status !== 'active' ? ` · ${s.status === 'empty' ? '已用完' : '已报废'}` : ''}</p>
+          <div className="actions">{s.status === 'active' && <><button className="secondary" onClick={() => { setOperation({ box: s, type: 'out' }); setAmount(1); setActionError(''); }}>用掉了</button>
             {!user.is_elderly && <button className="secondary" onClick={() => { setOperation({ box: s, type: 'move' }); setActionError(''); }}>移库</button>}
-            <button className="plain danger-text" onClick={() => { setOperation({ box: s, type: 'discard' }); setActionError(''); }}>扔掉了</button></div>
+            <button className="plain danger-text" onClick={() => { setOperation({ box: s, type: 'discard' }); setActionError(''); }}>扔掉了</button></>}
+            {user.role === 'admin' && <button className="secondary" onClick={() => setBoxEditing(s)}>修改药盒资料</button>}</div>
         </section>;
       })}</div>
     </> : tab === 'products' ? <div className="card-grid">{products.map(p => <section className="panel" key={p.id}><span className={`badge ${p.status === 'pending' ? 'attention' : ''}`}>{p.status === 'pending' ? '！待家人补充' : '✓ 已确认'}</span><h2>{p.name}</h2><p>{p.manufacturer || '生产厂家待补充'}</p><p>{p.specification || '规格待补充'}</p><Speak text={`${p.name}。${p.indications || ''}。${p.precautions || ''}`} />
       {user.role === 'admin' && <button className="secondary" onClick={() => {
-        setEditing(p); setEditDraft({ ...p, sources: JSON.parse(p.sources) }); setActionError('');
+        setEditing(p); setActionError('');
       }}>修改药品资料</button>}</section>)}</div> : <Movements family={family} version={version} />}
     {intake && <Intake defaultCode={intake.code} products={products} warehouses={warehouses} close={() => openIntake(undefined)} saved={changed} />}
     {operation && <Modal title={operation.type === 'out' ? '确认用掉的数量' : operation.type === 'move' ? '把这盒药移到哪里' : '确认扔掉这盒药'} close={() => { if (!busy) setOperation(undefined); }}>
@@ -152,11 +162,53 @@ export function InventoryPage({ family, user, products, warehouses, version, cha
           .then(() => { changed(); setOperation(undefined); }).catch(e => setActionError(errorText(e))).finally(() => setBusy(false));
       }}>{busy ? '正在记录…' : '确认'}</button>
     </Modal>}
-    {editing && <Modal title="核对药品资料" close={() => { if (!busy) setEditing(undefined); }}><form onSubmit={e => {
-      e.preventDefault(); setBusy(true);
-      api(`/products/${editing.id}`, 'PUT', editDraft).then(() => { changed(); setEditing(undefined); }).catch(e => setActionError(errorText(e))).finally(() => setBusy(false));
-    }}><ProductFields value={editDraft} set={setEditDraft} />{actionError && <Message warning>{actionError}</Message>}<button disabled={busy}>确认修改药品</button></form></Modal>}
+    {editing && <ProductEditor product={editing} close={() => setEditing(undefined)} saved={changed} />}
+    {boxEditing && <StockMetadataEditor box={boxEditing} close={() => setBoxEditing(undefined)} saved={changed} />}
   </>;
+}
+export function ProductEditor({ product, close, saved }: { product: Product; close: () => void; saved: () => void }) {
+  const [draft, setDraft] = useState<ProductDraft>({ ...product, sources: JSON.parse(product.sources) });
+  const codes = useLoad<string[]>(`/products/${product.id}/codes`);
+  const [codesText, setCodesText] = useState<string>(), [error, setError] = useState(''), [busy, setBusy] = useState(false);
+  return <Modal title="核对药品资料" close={() => { if (!busy) close(); }}><form onSubmit={e => {
+    e.preventDefault(); setBusy(true); setError('');
+    (async () => {
+      if (!codes.data) throw new Error('条码映射尚未读取，请读取成功后再保存');
+      await api(`/products/${product.id}`, 'PUT', { ...parseProductDraft(draft),
+        codes: (codesText ?? codes.data.join('\n')).split(/\r?\n/).map(s => s.trim()).filter(Boolean) });
+      saved(); close();
+    })().catch(e => setError(errorText(e))).finally(() => setBusy(false));
+  }}><ProductFields value={draft} set={setDraft} />
+    <p className="fine">这些是药品共用资料，不会改写既有药盒数量、有效期和服药历史。已有库存或计划时不能直接更换基本单位。</p>
+    <label>条码映射键（每行一个）<textarea value={codesText ?? codes.data?.join('\n') ?? ''} disabled={!codes.data || busy} onChange={e => setCodesText(e.target.value)} /></label>
+    <p className="fine">可填写商品条码 / GTIN 或追溯码的前 7 位映射键；每盒完整追溯码请在药盒资料中修改。</p>
+    {codes.error && <Message warning>{codes.error}<button type="button" className="plain" onClick={codes.reload}>重新读取条码</button></Message>}
+    {error && <Message warning>{error}</Message>}<button disabled={busy || !codes.data}>确认修改药品</button>
+  </form></Modal>;
+}
+export function StockMetadataEditor({ box, close, saved }: { box: StockItem; close: () => void; saved: () => void }) {
+  const [expiry, setExpiry] = useState(box.expiry_date || ''), [batch, setBatch] = useState(box.batch_number || '');
+  const [serial, setSerial] = useState(box.serial_number || ''), [trace, setTrace] = useState(box.trace_code || '');
+  const [size, setSize] = useState(String(box.units_per_package)), [opened, setOpened] = useState(!!box.opened);
+  const [error, setError] = useState(''), [busy, setBusy] = useState(false);
+  return <Modal title="修改药盒资料" close={() => { if (!busy) close(); }}><form onSubmit={e => {
+    e.preventDefault(); setBusy(true); setError('');
+    (async () => {
+      const body = stockMetadataSchema.parse({ expiry_date: expiry || null, batch_number: batch || null, serial_number: serial || null,
+        trace_code: trace || null, units_per_package: enteredAmount.parse(size), opened, expected_version: box.metadata_version });
+      await api(`/stock/${box.id}`, 'PUT', body); saved(); close();
+    })().catch(e => setError(errorText(e))).finally(() => setBusy(false));
+  }}><h3>{box.name}</h3><p>药箱：{box.warehouse_name} · 剩余 {box.units_remaining} {box.base_unit}</p>
+    <label>有效期截止（保质期）<input type="date" value={expiry} onChange={e => setExpiry(e.target.value)} /></label>
+    <label>批号<input value={batch} maxLength={100} onChange={e => setBatch(e.target.value)} /></label>
+    <label>序列号<input value={serial} maxLength={100} onChange={e => setSerial(e.target.value)} /></label>
+    <label>完整追溯码（20 位，可留空）<input value={trace} inputMode="numeric" maxLength={20} pattern="[0-9]{20}" onChange={e => setTrace(e.target.value)} /></label>
+    <label>每盒数量<NumberInput value={size} min={Math.max(0.001, box.units_remaining)} max="100000" step="0.001" required onValue={setSize} /></label>
+    <label className="check"><input type="checkbox" checked={opened} onChange={e => setOpened(e.target.checked)} />已开封</label>
+    <Message>只修正这盒资料，不改剩余库存、药品归属或服药历史。每盒数量须容纳当前余量及今日可撤销服药量。库存变动请通过出入库记录，换药箱请用移库；保存时会检查是否有人同时修改或记录服药。</Message>
+    {error && <Message warning>{error}</Message>}<div className="actions"><button disabled={busy}>{busy ? '正在保存…' : '确认修改药盒资料'}</button>
+      <button type="button" className="secondary" disabled={busy} onClick={() => { saved(); close(); }}>取消编辑并刷新药盒</button></div>
+  </form></Modal>;
 }
 function Movements({ family, version }: { family: FamilyGroup; version: number }) {
   const { data, error } = useLoad<{ id: string; type: string; name: string; username: string; amount: number; created_at: string }[]>('/movements', `${family.id}:${version}`);

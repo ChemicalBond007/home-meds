@@ -43,3 +43,15 @@ export const productSchema = medicineInfoSchema.extend({
   status: z.enum(['pending', 'confirmed']).default('confirmed'),
   code: z.string().max(100).optional(),
 });
+export const productUpdateSchema = productSchema.extend({
+  codes: z.array(z.string().trim().min(1).max(100)).max(50).optional(),
+});
+export const stockMetadataSchema = z.object({
+  expiry_date: dateSchema.nullable(),
+  batch_number: z.string().trim().max(100).nullable(),
+  serial_number: z.string().trim().max(100).nullable(),
+  trace_code: z.string().regex(/^\d{20}$/, '追溯码须为 20 位数字').nullable(),
+  units_per_package: amountSchema,
+  opened: z.boolean(),
+  expected_version: z.number().int().min(0),
+});

@@ -13,7 +13,7 @@ export const logActions: Record<string, string> = {
   'group.rotate': '更换分组码', 'member.update': '修改成员',
   'warehouse.create': '创建药箱', 'warehouse.update': '修改药箱', 'warehouse.delete': '删除药箱',
   'product.create': '创建药品', 'product.update': '修改药品',
-  'stock.create': '药品入库', 'stock.change': '调整库存',
+  'stock.create': '药品入库', 'stock.change': '调整库存', 'stock.update': '修改药盒资料',
   'stock.in': '入库', 'stock.out': '出库', 'stock.move': '移动药盒', 'stock.discard': '丢弃药盒',
   'stock.dose': '服药扣库存', 'stock.undo_dose': '撤销服药恢复库存',
   'plan.create': '创建计划', 'plan.update': '修改计划', 'plan.pause': '暂停计划',

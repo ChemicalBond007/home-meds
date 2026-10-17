@@ -1,8 +1,9 @@
 import { Hono } from 'hono';
 import { z } from 'zod';
 import { type AppEnv, admin, group, json, fail } from './core';
-import { amountSchema, dateSchema, productSchema } from '../shared/schemas';
+import { amountSchema, dateSchema, productSchema, productUpdateSchema, stockMetadataSchema } from '../shared/schemas';
 import { parseCode } from '../shared/barcode';
+import { localClock } from '../shared/schedule';
 import type { Product, StockItem } from '../shared/types';
 
 export const inventory = new Hono<AppEnv>();
@@ -34,18 +35,31 @@ inventory.post('/products', async c => {
   c.set('auditTarget', id);
   return c.json({ id }, 201);
 });
+inventory.get('/products/:id/codes', async c => {
+  admin(c);
+  const g = await group(c), id = c.req.param('id');
+  if (!await c.env.DB.prepare('SELECT id FROM products WHERE id=? AND group_id=?').bind(id, g.id).first()) fail(404, '药品不存在');
+  return c.json((await c.env.DB.prepare('SELECT code FROM product_codes WHERE product_id=? AND group_id=? ORDER BY code')
+    .bind(id, g.id).all<{ code: string }>()).results.map(r => r.code));
+});
 inventory.put('/products/:id', async c => {
   admin(c);
-  const g = await group(c), d = await json(c, productSchema), id = c.req.param('id');
+  const g = await group(c), d = await json(c, productUpdateSchema), id = c.req.param('id');
   const old = await c.env.DB.prepare('SELECT * FROM products WHERE id=? AND group_id=?').bind(id, g.id).first<Product>();
   if (!old) fail(404, '药品不存在');
   if (old.base_unit !== d.base_unit) {
     const used = await c.env.DB.prepare(`SELECT id FROM stock_items WHERE product_id=? UNION ALL SELECT id FROM medication_plans WHERE product_id=? LIMIT 1`).bind(id, id).first();
     if (used) fail(409, '已有库存或计划，不能修改基本单位，请另建药品');
   }
-  await c.env.DB.prepare(`UPDATE products SET name=?,generic_name=?,manufacturer=?,specification=?,indications=?,precautions=?,
+  const statements = [c.env.DB.prepare(`UPDATE products SET name=?,generic_name=?,manufacturer=?,specification=?,indications=?,precautions=?,
     base_unit=?,units_per_package=?,status=?,sources=?,updated_by=? WHERE id=? AND group_id=?`)
-    .bind(d.name, d.generic_name, d.manufacturer, d.specification, d.indications, d.precautions, d.base_unit, d.units_per_package, d.status, JSON.stringify(d.sources), c.get('user').id, id, g.id).run();
+    .bind(d.name, d.generic_name, d.manufacturer, d.specification, d.indications, d.precautions, d.base_unit, d.units_per_package, d.status, JSON.stringify(d.sources), c.get('user').id, id, g.id)];
+  if (d.codes) {
+    const codes = [...new Set(d.codes.map(code => parseCode(code).product_key || code))];
+    statements.push(c.env.DB.prepare('DELETE FROM product_codes WHERE product_id=? AND group_id=?').bind(id, g.id),
+      ...codes.map(code => c.env.DB.prepare('INSERT INTO product_codes(group_id,code,product_id) VALUES(?,?,?)').bind(g.id, code, id)));
+  }
+  try { await c.env.DB.batch(statements); } catch { fail(409, '条码已关联其他药品，资料未保存，请核对后重试'); }
   return c.json({ ok: true });
 });
 const stockQuery = `SELECT s.*,p.name,p.base_unit,w.name AS warehouse_name FROM stock_items s
@@ -53,6 +67,29 @@ const stockQuery = `SELECT s.*,p.name,p.base_unit,w.name AS warehouse_name FROM 
 inventory.get('/stock', async c => {
   const g = await group(c);
   return c.json((await c.env.DB.prepare(`${stockQuery} WHERE s.group_id=? ORDER BY s.status,s.expiry_date IS NULL,s.expiry_date`).bind(g.id).all()).results);
+});
+inventory.put('/stock/:id', async c => {
+  admin(c);
+  const g = await group(c), d = await json(c, stockMetadataSchema), id = c.req.param('id');
+  const old = await c.env.DB.prepare('SELECT id FROM stock_items WHERE id=? AND group_id=?').bind(id, g.id).first();
+  if (!old) fail(404, '药盒不存在');
+  if (d.trace_code) {
+    const mapped = await c.env.DB.prepare(`SELECT pc.product_id,s.product_id AS current_product FROM product_codes pc
+      JOIN stock_items s ON s.id=? WHERE pc.group_id=? AND pc.code=?`)
+      .bind(id, g.id, parseCode(d.trace_code).product_key!).first<{ product_id: string; current_product: string }>();
+    if (mapped && mapped.product_id !== mapped.current_product) fail(409, '此追溯码的前缀关联另一种药品，请先核对药品条码映射');
+  }
+  let changed: D1Result;
+  try {
+    changed = await c.env.DB.prepare(`UPDATE stock_items SET expiry_date=?,batch_number=?,serial_number=?,trace_code=?,
+      units_per_package=?,opened=?,metadata_version=metadata_version+1 WHERE id=? AND group_id=? AND metadata_version=?
+      AND ROUND(units_remaining+COALESCE((SELECT SUM(amount) FROM dose_logs
+        WHERE stock_item_id=stock_items.id AND status='taken' AND local_date=?),0),6)<=?`)
+      .bind(d.expiry_date, d.batch_number || null, d.serial_number || null, d.trace_code,
+        d.units_per_package, Number(d.opened), id, g.id, d.expected_version, localClock(new Date(), g.timezone).date, d.units_per_package).run();
+  } catch { fail(409, '追溯码已用于其他药盒或关联另一种药品，资料未保存'); }
+  if (!changed.meta.changes) fail(409, '药盒或库存已被修改，或每盒数量不足以容纳当前余量及今日可撤销的服药量，请刷新核对后重试');
+  return c.json({ ok: true });
 });
 inventory.post('/stock', async c => {
   const g = await group(c);
