@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">家药箱 2.0</string>
+    <string name="channel_name">服药提醒</string>
+    <string name="channel_description">到点提醒确认服药；家人超过 30 分钟未记录时提醒。</string>
+    <string name="voice_prompt">请说出想问的问题</string>
+</resources>

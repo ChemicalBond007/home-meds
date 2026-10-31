@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import { Modal, Message, errorText } from './components';
+import { prepareScannerReader } from './scanner-reader';
 type Detector = { detect(input: HTMLVideoElement): Promise<{ rawValue: string }[]> };
 type DetectorConstructor = new (options?: { formats: string[] }) => Detector;
 export function Scanner({ onCode, close }: { onCode: (value: string) => void; close: () => void }) {
@@ -19,7 +20,7 @@ export function Scanner({ onCode, close }: { onCode: (value: string) => void; cl
       const fallback = async () => {
         const zxing = await import('zxing-wasm/reader');
         const wasm = (await import('zxing-wasm/reader/zxing_reader.wasm?url')).default;
-        zxing.prepareZXingModule({ overrides: { locateFile: (p: string) => p.endsWith('.wasm') ? wasm : p } });
+        prepareScannerReader(zxing, wasm);
         return zxing;
       };
       let zxing: Awaited<ReturnType<typeof fallback>> | undefined;

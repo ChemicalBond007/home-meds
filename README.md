@@ -2,6 +2,8 @@
 
 一个 Cloudflare Worker 同时托管 React PWA、Hono API 和五分钟一次的服药提醒，使用 D1，不需要域名或 R2。
 
+独立原生 Android 2.0 客户端位于 [`android-v2/`](android-v2/README.md)，使用 Jetpack Compose 与现有 JSON/SSE API，保留 `android/` 1.0 工程不变。
+
 ## 本地运行
 
 需要 Node.js 24。
