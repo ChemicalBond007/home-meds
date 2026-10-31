@@ -1,6 +1,8 @@
 import { useCallback, useEffect, useState } from 'react';
 import { z } from 'zod';
-import { api, sse } from './api';
+import { api } from './api';
+import { aiLookup } from './ai';
+import { isApp } from './native';
 import { Confirm, Empty, Message, Modal, Speak, errorText, useLoad } from './components';
 import { Scanner } from './Scanner';
 import { productSchema, stockMetadataSchema } from '../shared/schemas';
@@ -63,7 +65,7 @@ export function Intake({ defaultCode = '', products, warehouses, close, saved }:
   const lookup = async () => {
     setAiBusy(true); setError(''); setProductId(''); setProgress('正在开始查询…');
     try {
-      await sse('/ai/lookup', { query: [code, query || draft.name].filter(Boolean).join(' ') }, (event, data) => {
+      await aiLookup([code, query || draft.name].filter(Boolean).join(' '), (event, data) => {
         if (event === 'progress') setProgress(String(data));
         if (event === 'result') {
           const r = data as Partial<ProductDraft>;
@@ -122,8 +124,8 @@ export function InventoryPage({ family, user, products, warehouses, version, cha
   const [operation, setOperation] = useState<{ box: StockItem; type: 'out' | 'discard' | 'move' }>();
   const [amount, setAmount] = useState(1), [to, setTo] = useState(warehouses[0]?.id || ''), [actionError, setActionError] = useState('');
   const [busy, setBusy] = useState(false);
-  const clock = localClock(new Date(), family.timezone);
-  const visible = data?.filter(s => (user.role === 'admin' && stockStatus === 'all' || s.status === (user.role === 'admin' ? stockStatus : 'active')) && s.name.includes(filter));
+  const clock = localClock(new Date(), family.timezone), canAdmin = user.role === 'admin' && !isApp();
+  const visible = data?.filter(s => (canAdmin && stockStatus === 'all' || s.status === (canAdmin ? stockStatus : 'active')) && s.name.includes(filter));
   return <>
     <div className="section-heading"><div><p className="eyebrow">FAMILY MEDICINE CABINET</p><h1>我的药箱</h1><p className="muted">每一盒放在哪里，还剩多少，一目了然。</p></div><button onClick={() => openIntake({})}>＋ 放进药箱</button></div>
     <div className="stats"><div><strong>{data?.filter(s => s.status === 'active').length ?? '—'}</strong><span>盒在药箱</span></div><div><strong>{products.length}</strong><span>种药品</span></div><div><strong>{data?.filter(s => s.status === 'active' && s.expiry_date && dayNumber(s.expiry_date) - dayNumber(clock.date) <= 30).length ?? '—'}</strong><span>盒过期或临期</span></div></div>
@@ -131,7 +133,7 @@ export function InventoryPage({ family, user, products, warehouses, version, cha
     {error && <Message warning>{error}</Message>}
     {tab === 'stock' ? <>
       <label className="search-label">查找药品<input type="search" value={filter} onChange={e => setFilter(e.target.value)} placeholder="输入药品名称" /></label>
-      {user.role === 'admin' && <label>药盒状态<select value={stockStatus} onChange={e => setStockStatus(e.target.value)}><option value="active">在库</option><option value="empty">已用完</option><option value="discarded">已报废</option><option value="all">全部药盒</option></select></label>}
+      {canAdmin && <label>药盒状态<select value={stockStatus} onChange={e => setStockStatus(e.target.value)}><option value="active">在库</option><option value="empty">已用完</option><option value="discarded">已报废</option><option value="all">全部药盒</option></select></label>}
       {visible?.length === 0 && <Empty title={filter ? '没找到这种药' : '药箱还是空的'}>点「放进药箱」，添加第一盒药。</Empty>}
       <div className="card-grid">{visible?.map(s => {
         const days = s.expiry_date ? dayNumber(s.expiry_date) - dayNumber(clock.date) : null;
@@ -143,11 +145,11 @@ export function InventoryPage({ family, user, products, warehouses, version, cha
           <div className="actions">{s.status === 'active' && <><button className="secondary" onClick={() => { setOperation({ box: s, type: 'out' }); setAmount(1); setActionError(''); }}>用掉了</button>
             {!user.is_elderly && <button className="secondary" onClick={() => { setOperation({ box: s, type: 'move' }); setActionError(''); }}>移库</button>}
             <button className="plain danger-text" onClick={() => { setOperation({ box: s, type: 'discard' }); setActionError(''); }}>扔掉了</button></>}
-            {user.role === 'admin' && <button className="secondary" onClick={() => setBoxEditing(s)}>修改药盒资料</button>}</div>
+            {canAdmin && <button className="secondary" onClick={() => setBoxEditing(s)}>修改药盒资料</button>}</div>
         </section>;
       })}</div>
     </> : tab === 'products' ? <div className="card-grid">{products.map(p => <section className="panel" key={p.id}><span className={`badge ${p.status === 'pending' ? 'attention' : ''}`}>{p.status === 'pending' ? '！待家人补充' : '✓ 已确认'}</span><h2>{p.name}</h2><p>{p.manufacturer || '生产厂家待补充'}</p><p>{p.specification || '规格待补充'}</p><Speak text={`${p.name}。${p.indications || ''}。${p.precautions || ''}`} />
-      {user.role === 'admin' && <button className="secondary" onClick={() => {
+      {canAdmin && <button className="secondary" onClick={() => {
         setEditing(p); setActionError('');
       }}>修改药品资料</button>}</section>)}</div> : <Movements family={family} version={version} />}
     {intake && <Intake defaultCode={intake.code} products={products} warehouses={warehouses} close={() => openIntake(undefined)} saved={changed} />}

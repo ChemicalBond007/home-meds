@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
-import { sse } from './api';
+import { aiChat } from './ai';
+import { isApp, nativeCall } from './native';
 import { Message, Empty, errorText } from './components';
 import { PlanEditor } from './Plans';
 import { appendProposal, parseProposal } from './chat-drafts';
@@ -22,6 +23,8 @@ export function ChatPage({ user, family, members, products, stock, changed }: {
   const controller = useRef<AbortController | null>(null), recognition = useRef<VoiceRecognition | null>(null);
   const Voice = (window as Window & { SpeechRecognition?: new () => VoiceRecognition; webkitSpeechRecognition?: new () => VoiceRecognition }).SpeechRecognition ||
     (window as Window & { webkitSpeechRecognition?: new () => VoiceRecognition }).webkitSpeechRecognition;
+  const [nativeVoice, setNativeVoice] = useState(false);
+  useEffect(() => { if (isApp()) nativeCall<{ available: boolean }>('voice.available').then(r => setNativeVoice(r.available)).catch(() => {}); }, []);
   useEffect(() => () => { controller.current?.abort(); recognition.current?.stop(); }, []);
   const send = async (intent: 'chat' | 'draft' = 'chat') => {
     const content = text.trim() || (intent === 'draft' && messages.length ? '请把上文已经明确的计划加入待确认列表；缺少信息时先问我，不要编造。' : '');
@@ -31,7 +34,7 @@ export function ChatPage({ user, family, members, products, stock, changed }: {
     const abort = new AbortController(); controller.current = abort;
     let received = 0;
     try {
-      await sse('/ai/chat', { user_id: target, messages: history, intent }, (event, value) => {
+      await aiChat({ user_id: target, messages: history, intent }, (event, value) => {
         if (event === 'delta') setMessages(prev => [...prev.slice(0, -1), { role: 'assistant', content: prev[prev.length - 1].content + String(value) }]);
         if (event === 'draft') {
           const p = parseProposal(value, target);
@@ -63,7 +66,11 @@ export function ChatPage({ user, family, members, products, stock, changed }: {
         <label>告诉助手你的计划<textarea value={text} onChange={e => setText(e.target.value)} maxLength={6000} placeholder="先说药名、用量和时间…" required /></label>
         <div className="actions"><button disabled={busy || !target}>{busy ? '正在回复…' : '发送'}</button>
           <button type="button" className="secondary" disabled={busy || !target || (!text.trim() && !messages.length)} onClick={() => void send('draft')}>生成待确认草稿</button>
-          {Voice && <button type="button" className="secondary" disabled={busy} onClick={() => {
+          {nativeVoice ? <button type="button" className="secondary" disabled={busy || listening} onClick={() => {
+            setListening(true); setError('');
+            nativeCall<{ text: string }>('voice.listen').then(r => setText(prev => prev + r.text))
+              .catch(() => setError('语音输入暂不可用，请键盘输入。')).finally(() => setListening(false));
+          }}>{listening ? '正在听…' : '语音输入'}</button> : Voice && <button type="button" className="secondary" disabled={busy} onClick={() => {
             if (listening) { recognition.current?.stop(); setListening(false); return; }
             const r = new Voice(); recognition.current = r; r.lang = 'zh-CN'; r.continuous = false;
             r.onresult = e => { setText(prev => prev + (e.results[0]?.[0]?.transcript || '')); setListening(false); };

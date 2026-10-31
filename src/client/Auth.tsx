@@ -4,6 +4,7 @@ import type { PublicKeyCredentialRequestOptionsJSON, PublicKeyCredentialCreation
 import { api } from './api';
 import { Message, errorText, Icon, useLoad } from './components';
 import { TotpSetup } from './TotpSetup';
+import { isApp } from './native';
 export function Login({ done }: { done: () => void }) {
   const [mode, setMode] = useState<'login' | 'register' | 'admin'>('login');
   const [name, setName] = useState(''), [secret, setSecret] = useState(''), [code, setCode] = useState(''), [join, setJoin] = useState('');
@@ -23,7 +24,7 @@ export function Login({ done }: { done: () => void }) {
       <p>一起整理家里的药，<br />记住每一次服药。</p><div className="login-art"><Icon name="box" /><span>一份清单，一家人的照顾</span></div>
     </section>
     <section className="login-form"><h2>{mode === 'register' ? '加入你的家庭' : '欢迎回家'}</h2>
-      <p className="muted">{mode === 'admin' ? '使用通行密钥、验证器或一次性凭证。' : '普通成员只需用户名登录，请勿在公共设备使用。'}</p>
+      <p className="muted">{mode === 'admin' ? isApp() ? '使用验证器或一次性凭证。手机应用不含管理功能，管理请使用网页版。' : '使用通行密钥、验证器或一次性凭证。' : '普通成员只需用户名登录，请勿在公共设备使用。'}</p>
       <div className="segmented">{(['login', 'register', 'admin'] as const).map(m => <button type="button" className={mode === m ? 'active' : ''} key={m} onClick={() => { setMode(m); setError(''); }}>{m === 'login' ? '成员登录' : m === 'register' ? '注册' : '管理员'}</button>)}</div>
       <form onSubmit={e => { e.preventDefault(); void submit(); }}>
         <label>用户名<input value={name} onChange={e => setName(e.target.value)} autoComplete="username" minLength={2} maxLength={40} required /></label>
@@ -33,7 +34,7 @@ export function Login({ done }: { done: () => void }) {
           <details><summary>使用临时密码或恢复码</summary><label>一次性凭证<input type="password" value={secret} onChange={e => setSecret(e.target.value)} autoComplete="current-password" /></label></details></>}
         {error && <Message warning>{error}</Message>}
         <button className="full" disabled={busy} type="submit">{busy ? '正在登录…' : mode === 'register' ? '确认注册并加入家庭' : '进入家药箱'}</button>
-        {mode === 'admin' && <button disabled={busy || !name} className="secondary full" type="button" onClick={() => {
+        {mode === 'admin' && !isApp() && <button disabled={busy || !name} className="secondary full" type="button" onClick={() => {
           setBusy(true); setError('');
           api<{ id: string; options: PublicKeyCredentialRequestOptionsJSON }>('/auth/passkey/options', 'POST', { username: name })
             .then(async d => api('/auth/passkey/login', 'POST', { id: d.id, response: await startAuthentication({ optionsJSON: d.options }) }))

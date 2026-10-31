@@ -10,6 +10,7 @@ import { Scanner } from './Scanner';
 import type { DoseLog, FamilyGroup, Product, StockItem, Todo, User } from '../shared/types';
 import type { ParsedCode } from '../shared/barcode';
 import { dayNumber, localClock } from '../shared/schedule';
+import { isApp, nativeCall, nativePlansChanged } from './native';
 type Page = 'home' | 'inventory' | 'plans' | 'chat' | 'settings';
 const navigation = [
   { id: 'home', icon: 'home', name: '今天' }, { id: 'inventory', icon: 'box', name: '我的药箱' },
@@ -21,33 +22,42 @@ export function App() {
   const refreshAuth = () => setAuthVersion(n => n + 1);
   if (me.loading) return <main className="loading"><img src="/icon.svg" alt="" /><h1>家药箱</h1><p role="status">正在打开你的药箱…</p></main>;
   if (!me.data) return <Login done={refreshAuth} />;
-  if (me.data.binding_only) return <main className="binding-page"><div className="brand"><img src="/icon.svg" alt="" />家药箱</div><Security bindingOnly done={refreshAuth} /></main>;
+  if (me.data.binding_only) return <main className="binding-page"><div className="brand"><img src="/icon.svg" alt="" />家药箱</div>{isApp()
+    ? <section className="panel"><h2>请在网页完成管理员绑定</h2><p>手机应用不提供管理员安全设置。请在电脑或手机浏览器打开家药箱网页，绑定验证器或通行密钥后，再回到应用登录。</p>
+      <button className="secondary" onClick={() => { void api('/auth/logout', 'POST', {}).finally(refreshAuth); }}>退出登录</button></section>
+    : <Security bindingOnly done={refreshAuth} />}</main>;
   return <Workspace user={me.data.user} refreshAuth={refreshAuth} />;
 }
 function Workspace({ user, refreshAuth }: { user: User; refreshAuth: () => void }) {
   const [version, setVersion] = useState(0), [page, setPage] = useState<Page>('home');
-  const [groupId, setGroupId] = useState(new URLSearchParams(location.search).get('group') || selectedGroup);
+  // The app is for daily family use: administrators only see their own family there.
+  const app = isApp();
+  const [groupId, setGroupId] = useState(app ? user.group_id || '' : new URLSearchParams(location.search).get('group') || selectedGroup);
   const groups = useLoad<FamilyGroup[]>('/groups', version);
-  const family = groups.data?.find(g => g.id === groupId) || groups.data?.find(g => g.id === user.group_id) || groups.data?.[0];
+  const family = app ? groups.data?.find(g => g.id === user.group_id)
+    : groups.data?.find(g => g.id === groupId) || groups.data?.find(g => g.id === user.group_id) || groups.data?.[0];
   useEffect(() => { if (family && family.id !== groupId) setGroupId(family.id); if (family) selectGroup(family.id); }, [family?.id, groupId]);
   useEffect(() => {
     document.documentElement.classList.toggle('elderly', !!user.is_elderly);
     return () => document.documentElement.classList.remove('elderly');
   }, [user.is_elderly]);
   useEffect(() => { window.scrollTo({ top: 0 }); document.title = `${navigation.find(n => n.id === page)?.name} · 家药箱`; }, [page]);
-  const changed = () => setVersion(n => n + 1);
+  useEffect(() => {
+    if (app) nativeCall('session.changed', { user_id: user.id, group_id: user.group_id, is_elderly: !!user.is_elderly }).catch(() => {});
+  }, [app, user.id, user.group_id, user.is_elderly]);
+  const changed = () => { setVersion(n => n + 1); nativePlansChanged(); };
   return <div className={`app ${user.is_elderly ? 'elderly-layout' : ''}`}><a className="skip-link" href="#main">跳到主要内容</a>
     <aside className="sidebar"><div className="brand"><img src="/icon.svg" alt="" /><span>家药箱<small>家人一起照顾</small></span></div>
       <nav aria-label="主导航">{navigation.map(n => <button key={n.id} className={`nav-item ${page === n.id ? 'active' : ''}`} aria-current={page === n.id ? 'page' : undefined} onClick={() => setPage(n.id)}><Icon name={n.icon} /><span>{n.name}</span></button>)}</nav>
       <div className="sidebar-bottom"><span className="avatar">{user.username.slice(0, 1)}</span><div><strong>{user.username}</strong><small>{user.role === 'admin' ? '管理员' : user.is_elderly ? '老人模式' : '家庭成员'}</small></div></div>
     </aside>
     <div className="workspace"><header className="topbar"><div className="mobile-brand"><img src="/icon.svg" alt="" />家药箱</div><span className="topbar-note">一家人的健康小事，认真记好。</span>
-      {groups.data?.length ? <label className="group-picker"><span>当前家庭</span><select aria-label="当前家庭" value={family?.id || ''} onChange={e => { selectGroup(e.target.value); setGroupId(e.target.value); }}>
+      {groups.data?.length && !app ? <label className="group-picker"><span>当前家庭</span><select aria-label="当前家庭" value={family?.id || ''} onChange={e => { selectGroup(e.target.value); setGroupId(e.target.value); }}>
         {groups.data.map(g => <option value={g.id} key={g.id}>{g.name}</option>)}</select></label> : <span>欢迎，{user.username}</span>}</header>
       <main id="main" tabIndex={-1}>
         {groups.error && <Message warning>{groups.error}</Message>}
         {groups.loading && !family ? <Message>正在读取家庭…</Message> : family ? <FamilyContent key={family.id} family={family} groups={groups.data || []} user={user} page={page} navigate={setPage} version={version} changed={changed} refreshAuth={refreshAuth} />
-          : <><Empty title={user.role === 'admin' ? '先为家人建一个药箱' : '账号还没有加入群组'}>{user.role === 'admin' ? '在下面创建群组，将分组码交给家人注册。' : '请联系管理员安排群组。'}</Empty>
+          : <><Empty title={user.role === 'admin' && !app ? '先为家人建一个药箱' : '账号还没有加入群组'}>{user.role === 'admin' ? app ? '请在家药箱网页的「家庭管理」中创建或加入家庭。' : '在下面创建群组，将分组码交给家人注册。' : '请联系管理员安排群组。'}</Empty>
             <SettingsPage user={user} groups={groups.data || []} members={[]} warehouses={[]} changed={changed} logout={refreshAuth} /></>}
       </main>
       <footer>家药箱 · 按医嘱和说明书用药，记录不能代替医疗建议。</footer>

@@ -40,6 +40,8 @@ const policies: Policy[] = [
   ['POST', '/ai/search-probe', 'ai.search.probe', 'global'],
   ['POST', '/ai/lookup', 'ai.lookup', 'group'],
   ['POST', '/ai/chat', 'ai.chat', 'group'],
+  ['POST', '/app/ai/session', 'ai.app.session', 'group'],
+  ['POST', '/app/ai/finish', 'ai.app.finish', 'group'],
   ['POST', '/push/subscribe', 'push.subscribe', 'account'],
   ['POST', '/push/unsubscribe', 'push.unsubscribe', 'account'],
   ['GET', '/admin/logs', 'logs.view', 'global'],
@@ -64,7 +66,7 @@ export async function writeAudit(c: Ctx, outcome?: 'success' | 'failure', status
       .first<{ id: string; name: string }>() : null;
     await c.env.DB.prepare(`INSERT INTO audit_logs(actor_id,actor_name,group_id,group_name,action,method,route,outcome,http_status,target_id,subject_name)
       VALUES(?,?,?,?,?,?,?,?,?,?,?)`).bind(user?.id || null, user?.username || null, family?.id || null, family?.name || null,
-        policy.action, c.req.method, policy.route, outcome || (status < 400 && !c.get('auditFailed') ? 'success' : 'failure'),
+        c.get('auditAction') || policy.action, c.req.method, policy.route, outcome || (status < 400 && !c.get('auditFailed') ? 'success' : 'failure'),
         status, target, c.get('auditSubject') || null).run();
   } catch {
     // A logging outage must not turn an already-committed action into a retry.
@@ -74,5 +76,5 @@ export async function writeAudit(c: Ctx, outcome?: 'success' | 'failure', status
 export const audit = createMiddleware<AppEnv>(async (c, next) => {
   await next();
   // SSE handlers log their final application outcome, not the initial HTTP 200.
-  if (!c.get('auditStreaming')) await writeAudit(c);
+  if (!c.get('auditStreaming') && !c.get('auditSkip')) await writeAudit(c);
 });

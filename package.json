@@ -6,7 +6,7 @@
   "scripts": {
     "dev": "vite --host 127.0.0.1",
     "dev:worker": "wrangler dev --ip 127.0.0.1",
-    "build": "tsc --noEmit && vite build",
+    "build": "tsc --noEmit && vite build && node scripts/check-built-css.mjs",
     "check": "tsc --noEmit",
     "check:pages": "cd pages && wrangler pages functions build --outdir ../.wrangler/pages-check",
     "test": "vitest run",

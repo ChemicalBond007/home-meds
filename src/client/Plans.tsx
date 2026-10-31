@@ -4,6 +4,7 @@ import { api } from './api';
 import { Confirm, Empty, Message, Modal, errorText, useLoad } from './components';
 import { planSchema } from '../shared/schemas';
 import { localClock } from '../shared/schedule';
+import { uuid } from '../shared/uuid';
 import { parseCode } from '../shared/barcode';
 import type { User, Product, Plan, Todo, StockItem, FamilyGroup } from '../shared/types';
 import { Scanner } from './Scanner';
@@ -72,6 +73,10 @@ export function PlanEditor({ initial, planId, members, products, stock, family, 
     </form>
   </Modal>;
 }
+export function asNeededTodo(plan: Plan, timezone: string): Todo {
+  return { key: uuid(), plan, local_date: localClock(new Date(), timezone).date,
+    scheduled_time: `as-needed:${uuid()}`, state: 'pending' };
+}
 export function PlansPage({ members, products, stock, family, user, version, changed, openDose }: {
   members: User[]; products: Product[]; stock?: StockItem[]; family: FamilyGroup; user: User; version: number; changed: () => void; openDose: (t: Todo) => void;
 }) {
@@ -90,8 +95,7 @@ export function PlansPage({ members, products, stock, family, user, version, cha
       {p.notes && <p>{p.notes}</p>}<p className="fine">最后修改：{members.find(u => u.id === p.updated_by)?.username || '管理员'}</p>
       <div className="actions"><button className="secondary" onClick={() => setEditing({ id: p.id, draft: toDraft(p) })}>修改</button>
         {p.enabled ? <button className="plain" onClick={() => setPause(p)}>暂停</button> : null}
-        {p.enabled && p.frequency === 'as_needed' && <button onClick={() => openDose({ key: crypto.randomUUID(), plan: p, local_date: localClock(new Date(), family.timezone).date,
-          scheduled_time: `as-needed:${crypto.randomUUID()}`, state: 'pending' })}>记录一次</button>}</div>
+        {p.enabled && p.frequency === 'as_needed' && <button onClick={() => openDose(asNeededTodo(p, family.timezone))}>记录一次</button>}</div>
     </section>)}</div>
     {editing && <PlanEditor initial={editing.draft || (members.find(m => m.id === user.id) ? {
       user_id: user.id, product_id: null, medicine_name: '', amount: 1, unit: '片', times: ['08:00'], frequency: 'daily', weekdays: [], interval_days: 1,

@@ -9,6 +9,7 @@ export type AppEnv = {
   Variables: {
     user: User; session: { token_hash: string; binding_only: number }; group: FamilyGroup;
     auditActor?: User; auditSubject?: string; auditTarget?: string; auditStreaming?: boolean; auditFailed?: boolean;
+    auditAction?: string; auditSkip?: boolean;
   };
 };
 export type Ctx = Context<AppEnv>;

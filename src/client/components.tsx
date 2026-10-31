@@ -1,5 +1,6 @@
-import { useEffect, useRef, useState, type ReactNode } from 'react';
+import { useEffect, useId, useRef, useState, type ReactNode } from 'react';
 import { api } from './api';
+import { isApp, nativeCall } from './native';
 export const errorText = (e: unknown) => e instanceof Error ? e.message : '操作失败，请重试';
 export function useLoad<T>(path: string, version: string | number = '') {
   const [data, setData] = useState<T>(), [error, setError] = useState(''), [loading, setLoading] = useState(true);
@@ -18,14 +19,14 @@ export function Message({ children, warning = false }: { children: ReactNode; wa
 }
 export function Modal({ title, children, close }: { title: string; children: ReactNode; close: () => void }) {
   const ref = useRef<HTMLDialogElement>(null);
-  const titleId = useRef(`modal-${crypto.randomUUID()}`);
+  const titleId = useId();
   useEffect(() => {
     const el = ref.current!;
     el.showModal();
     return () => el.close();
   }, []);
-  return <dialog ref={ref} aria-labelledby={titleId.current} onCancel={e => { e.preventDefault(); close(); }}>
-    <div className="modal-heading"><h2 id={titleId.current}>{title}</h2><button type="button" className="plain" onClick={close} aria-label="关闭弹窗">关闭 ×</button></div>
+  return <dialog ref={ref} aria-labelledby={titleId} onCancel={e => { e.preventDefault(); close(); }}>
+    <div className="modal-heading"><h2 id={titleId}>{title}</h2><button type="button" className="plain" onClick={close} aria-label="关闭弹窗">关闭 ×</button></div>
     {children}
   </dialog>;
 }
@@ -45,13 +46,19 @@ export function Icon({ name }: { name: 'home' | 'box' | 'plan' | 'chat' | 'setti
   return <svg className="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d={paths[name]} /></svg>;
 }
 export function Speak({ text }: { text: string }) {
-  const [voice, setVoice] = useState<SpeechSynthesisVoice>();
+  const [voice, setVoice] = useState<SpeechSynthesisVoice>(), [nativeVoice, setNativeVoice] = useState(false);
   useEffect(() => {
+    if (isApp()) {
+      let active = true;
+      nativeCall<{ available: boolean }>('tts.available').then(r => { if (active) setNativeVoice(r.available); }).catch(() => {});
+      return () => { active = false; nativeCall('tts.stop').catch(() => {}); };
+    }
     if (!('speechSynthesis' in window)) return;
     const update = () => setVoice(speechSynthesis.getVoices().find(v => /^zh/i.test(v.lang)));
     update(); speechSynthesis.addEventListener('voiceschanged', update);
     return () => { speechSynthesis.removeEventListener('voiceschanged', update); speechSynthesis.cancel(); };
   }, []);
+  if (nativeVoice) return <button type="button" className="secondary" onClick={() => { nativeCall('tts.speak', { text }).catch(() => {}); }}>朗读药品信息</button>;
   if (!voice) return null;
   return <button type="button" className="secondary" onClick={() => {
     speechSynthesis.cancel();

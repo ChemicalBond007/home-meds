@@ -1,9 +1,11 @@
+import { isApp } from './native';
+const client = (): Record<string, string> => isApp() ? { 'X-HomeMeds-Client': 'android' } : {};
 export let selectedGroup = localStorage.getItem('home-meds-group') || '';
 export function selectGroup(id: string) { selectedGroup = id; localStorage.setItem('home-meds-group', id); }
 export async function api<T>(path: string, method = 'GET', body?: unknown): Promise<T> {
   const response = await fetch(`/api${path}`, {
     method, credentials: 'same-origin',
-    headers: { ...(body !== undefined ? { 'Content-Type': 'application/json' } : {}), ...(selectedGroup ? { 'X-Group-Id': selectedGroup } : {}) },
+    headers: { ...(body !== undefined ? { 'Content-Type': 'application/json' } : {}), ...(selectedGroup ? { 'X-Group-Id': selectedGroup } : {}), ...client() },
     body: body !== undefined ? JSON.stringify(body) : undefined,
   });
   const data = await response.json() as T & { error?: string };

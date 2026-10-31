@@ -130,6 +130,38 @@ npm run vapid:generate
 
 点击通知只打开确认流程，**通知里不能直接勾掉**。过期通知不会替今天的项勾选。手机先添加到桌面，再从桌面进入「设置 → 开启提醒」。国内安卓可能缺少 Google 推送服务，iPhone 需要 iOS 16.4 以上；首页提醒是主要渠道。
 
+## Android 应用
+
+`android/` 是包裹正式网址的原生外壳（WebView），只支持简体中文，适用于 Android 10（API 29）及以上，包名 `com.homemeds.app`。页面与网页版是同一份代码，日常功能一致；应用只在 `https://home-meds.pages.dev` 本站页面的主框架内开放原生桥接，外部链接用系统浏览器打开。
+
+- 管理员可以登录，但家庭管理、AI 配置、使用日志、管理员安全设置、群组切换以及修改药品资料、药盒资料只在网页版提供，接口权限不变。应用内不提供通行密钥；仅有绑定权限的管理员会被提示到网页完成绑定。
+- 「设置 → 日历与提醒」选择同步哪些家人的计划（默认只有自己）。计划写入手机本地日历「家药箱」，只存在本机、不同步到任何账号；每个计划时间一个 15 分钟的重复事件，可选择日历是否响铃。应用通知到点提醒本人；所选家人的计划开启「通知家人」且超过 30 分钟未记录时提醒我，老人账号不接收家人提醒。闹钟预先安排 48 小时，打开应用、计划变化、每 6 小时和开机后重新同步，断网时按上次同步的计划安排。到点先向服务器核对，已记录、计划已修改或暂停则不响；无法联网核对时仍提醒并注明。点通知只打开确认服药流程，**提醒不代表已经服药**。退出登录或换账号会删除本机日历、闹钟和通知。
+- Android 14 起需要在系统中允许「闹钟和提醒」才能准时，部分国产系统还要允许自启动、关闭电池优化，设置页会给出入口。
+- 手机端 AI：查询和对话在手机上运行，直接请求 LLM / Tavily。手机在 Android Keystore 生成 RSA-2048 密钥；`POST /api/app/ai/session` 先检查限额，再用该公钥（RSA-OAEP-SHA1 包装 AES-256-GCM）加密下发 LLM/Tavily 密钥，会话 15 分钟有效。密钥只在原生层解开，网页脚本只看到 `hm-key:` 占位符；原生层只把密钥附加到后台配置的 LLM 根地址或 Tavily 的 HTTPS 请求上，并且不跟随重定向。网页读取同样检查公开地址，拒绝解析到本机或私网的域名，正式版只读 HTTPS 网页。查药品、读计划等数据库工具仍经 `POST /api/app/ai/tool` 在 Worker 执行，沿用网页版的只读工具、计划对象锁定和每轮次数上限；`POST /api/app/ai/finish` 记录查询明细和审计，中途放弃的查询由 Cron 记为失败。`0007_app_ai_sessions.sql` 新增会话表。解开的密钥会短暂留在手机内存中，root 或调试过的手机可以读取，这是手机直连提供商的已知代价。
+- 语音输入调用系统语音识别（需要手机装有支持中文的语音服务），朗读使用系统中文 TTS，扫码使用相机权限。
+
+构建（需要 JDK 17 以上和 Android SDK Platform 37；compileSdk 37，targetSdk 36）：
+
+```powershell
+cd E:\Temp\Projects\home-meds\android
+$env:JAVA_HOME = 'C:\Program Files\Java\jdk-21'
+.\gradlew.bat testDebugUnitTest lintDebug assembleDebug
+```
+
+`android/local.properties` 写入 `sdk.dir=...`，该文件已忽略。APK 位于 `android/app/build/outputs/apk/debug/app-debug.apk`，使用调试签名，只供自己安装；上架或分发前需要另建发布签名，签名文件不要提交。
+
+```powershell
+.\platform-tools\adb.exe install -r android\app\build\outputs\apk\debug\app-debug.apk
+```
+
+本地联调：运行 `npm run dev:worker` 和 `npm run dev`，然后：
+
+```powershell
+.\platform-tools\adb.exe reverse tcp:5173 tcp:5173
+cd android; .\gradlew.bat assembleDebug -PhomeMedsBaseUrl=http://127.0.0.1:5173
+```
+
+只有调试版允许访问 `127.0.0.1` 的明文地址。应用依赖本版的 Worker 和网页（`/api/app/ai/*` 与原生桥接），发布到正式网址之后手机端 AI、日历和隐藏管理功能才会生效；在此之前应用只是打开旧网页。
 ## 部署（Pages 前端 + Worker 后端）
 
 正式网址：`https://home-meds.pages.dev`。
@@ -209,4 +241,5 @@ scripts/         管理员创建、AI 探测、VAPID
 tests/           workerd 单元和接口测试、本地演示 SQL
 public/          PWA manifest、SW、离线页、自托管图标
 pages/           Pages 前端配置和 /api 转发函数
+android/         Android 外壳：WebView、原生桥接、日历与提醒、手机端 AI 网络
 ```

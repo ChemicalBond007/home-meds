@@ -43,6 +43,10 @@ export async function runReminders(env: Bindings, now = new Date()) {
     env.DB.prepare('DELETE FROM sessions WHERE expires_at<?').bind(now.getTime()),
     env.DB.prepare('DELETE FROM auth_challenges WHERE expires_at<?').bind(now.getTime()),
     env.DB.prepare('DELETE FROM rate_limits WHERE expires_at<?').bind(Math.floor(now.getTime() / 1000)),
+    // An app lookup that never reported back is still shown to administrators, as a failure.
+    env.DB.prepare(`INSERT INTO ai_lookup_logs(id,user_id,group_id,query,success)
+      SELECT id,user_id,group_id,COALESCE(query,''),0 FROM app_ai_sessions WHERE kind='lookup' AND finished_at IS NULL AND expires_at<?`).bind(now.getTime()),
+    env.DB.prepare('DELETE FROM app_ai_sessions WHERE expires_at<?').bind(now.getTime()),
     env.DB.prepare('DELETE FROM notification_log WHERE local_date<?').bind(new Date(now.getTime() - 35 * 86400000).toISOString().slice(0, 10)),
   ]);
   if (!env.VAPID_PRIVATE_KEY || !env.VAPID_PUBLIC_KEY) return;
