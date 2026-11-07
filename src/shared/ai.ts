@@ -5,7 +5,7 @@ export const nativeSearchApis = ['responses', 'chat_completions', 'anthropic'] a
 const requestFields = ['messages', 'tools', 'tool_choice', 'stream', 'model', 'response_format'];
 export const aiSettingsSchema = z.object({
   provider: z.enum(['custom', 'deepseek']).default('custom'),
-  base_url: z.url().default('https://claw.shu.edu.cn/api'),
+  base_url: z.url().default('https://llm.example.com/api'),
   model: z.string().min(1).max(100).default('qwen3.5-27b'),
   extra_body: z.record(z.string(), z.unknown()).default({ enable_thinking: false }).refine(
     x => !requestFields.some(k => k in x), '额外参数不能覆盖消息、工具或输出配置',

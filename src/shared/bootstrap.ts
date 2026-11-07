@@ -1,5 +1,6 @@
 import type { User, FamilyGroup, Product, StockItem, Plan, Todo } from './types';
 import type { AISettings } from './ai';
+import type { DownloadSettings } from './download';
 
 export interface SecurityStatus { remaining: number; totp: boolean; passkeys: number }
 export interface AdminPasskeys {
@@ -23,6 +24,7 @@ export interface AdminBootstrap {
   security?: SecurityStatus;
   passkey_admins?: AdminPasskeys[];
   ai?: AISettingsState;
+  download?: DownloadSettings;
 }
 export interface AppBootstrap {
   api_version: 1;

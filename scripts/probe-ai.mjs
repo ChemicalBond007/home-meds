@@ -1,4 +1,4 @@
-const base = (process.env.LLM_BASE_URL || 'https://claw.shu.edu.cn/api').replace(/\/$/, '');
+const base = (process.env.LLM_BASE_URL || 'https://llm.example.com/api').replace(/\/$/, '');
 const key = process.env.LLM_API_KEY;
 const model = process.env.LLM_MODEL || 'qwen3.5-27b';
 if (!key) { console.error('请在 .dev.vars 设置 LLM_API_KEY，然后运行 npm run probe:ai'); process.exit(1); }

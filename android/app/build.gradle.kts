@@ -4,7 +4,7 @@ plugins {
 
 // The app is a shell around the deployed site. For local development, pass
 // -PhomeMedsBaseUrl=http://127.0.0.1:5173 and run `adb reverse tcp:5173 tcp:5173`.
-val baseUrl = providers.gradleProperty("homeMedsBaseUrl").getOrElse("https://home-meds.pages.dev").trimEnd('/')
+val baseUrl = providers.gradleProperty("homeMedsBaseUrl").getOrElse("https://your-domain.example.com").trimEnd('/')
 require(Regex("^(https://[A-Za-z0-9.-]+(:\\d+)?|http://(127\\.0\\.0\\.1|localhost)(:\\d+)?)$").matches(baseUrl)) {
     "homeMedsBaseUrl must be an https origin, or a local http origin for development"
 }

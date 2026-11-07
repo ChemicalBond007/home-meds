@@ -212,6 +212,6 @@ describe('medicine lookup search routing', () => {
       native_search: { ok: true }, tavily: { skipped: true }, duckduckgo: { skipped: true },
     });
     expect(mock.requests).toHaveLength(5);
-    expect(mock.requests.every(r => new URL(r.url).host === 'claw.shu.edu.cn')).toBe(true);
+    expect(mock.requests.every(r => new URL(r.url).host === 'llm.example.com')).toBe(true);
   });
 });

@@ -17,6 +17,7 @@ import androidx.compose.ui.viewinterop.AndroidView
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.compose.LocalLifecycleOwner
 import com.homemeds.app.preferredMedicineCode
+import com.homemeds.app.preferredGroupJoinCode
 import com.google.mlkit.vision.barcode.BarcodeScannerOptions
 import com.google.mlkit.vision.barcode.BarcodeScanning
 import com.google.mlkit.vision.barcode.common.Barcode
@@ -24,7 +25,9 @@ import com.google.mlkit.vision.common.InputImage
 import java.util.concurrent.Executors
 import java.util.concurrent.atomic.AtomicBoolean
 
-@Composable fun ScannerDialog(dismiss: () -> Unit, scanned: (String) -> Unit) {
+enum class ScanMode { MEDICINE, GROUP_JOIN }
+
+@Composable fun ScannerDialog(dismiss: () -> Unit, mode: ScanMode = ScanMode.MEDICINE, scanned: (String) -> Unit) {
     val context = LocalContext.current
     val lifecycle = LocalLifecycleOwner.current
     var permission by remember { mutableStateOf(ContextCompat.checkSelfPermission(context, Manifest.permission.CAMERA) == PackageManager.PERMISSION_GRANTED) }
@@ -32,21 +35,28 @@ import java.util.concurrent.atomic.AtomicBoolean
     var manual by remember { mutableStateOf("") }
     var error by remember { mutableStateOf<String?>(null) }
     val onScanned by rememberUpdatedState(scanned)
-    val accepted = remember { AtomicBoolean(false) }
+    val accepted = remember(mode) { AtomicBoolean(false) }
     val view = remember { PreviewView(context).apply { implementationMode = PreviewView.ImplementationMode.COMPATIBLE } }
-    Modal("扫描药品条码 / 追溯码", dismiss) {
-        Text("支持商品条码、GS1、Data Matrix 和二维码。请只对准一个药盒；同时发现商品码和追溯码时优先使用追溯码。识别完全在本机进行。")
+    Modal(if (mode == ScanMode.GROUP_JOIN) "扫描家庭分组码二维码" else "扫描药品条码 / 追溯码", dismiss) {
+        Text(if (mode == ScanMode.GROUP_JOIN) "请只对准管理台生成的一个分组码二维码。识别完全在本机进行，不会打开网址或更改服务器地址；识别后仍需确认注册。"
+            else "支持商品条码、GS1、Data Matrix 和二维码。请只对准一个药盒；同时发现商品码和追溯码时优先使用追溯码。识别完全在本机进行。")
         if (permission) AndroidView({ view }, Modifier.fillMaxWidth().height(280.dp))
         else Action("允许相机扫码") { request.launch(Manifest.permission.CAMERA) }
         error?.let { Text(it, color = Red) }
-        Field("也可手动输入或粘贴", manual, { manual = it })
-        Action("使用输入的码", enabled = manual.isNotBlank()) { if (accepted.compareAndSet(false, true)) onScanned(manual.trim()) }
+        if (mode == ScanMode.GROUP_JOIN) Action("返回手动输入分组码", secondary = true, onClick = dismiss)
+        else {
+            Field("也可手动输入或粘贴", manual, { manual = it })
+            Action("使用输入的码", enabled = manual.isNotBlank()) { if (accepted.compareAndSet(false, true)) onScanned(manual.trim()) }
+        }
     }
-    DisposableEffect(permission, lifecycle, view) {
+    DisposableEffect(permission, lifecycle, view, mode) {
         val executor = Executors.newSingleThreadExecutor()
-        val scanner = BarcodeScanning.getClient(BarcodeScannerOptions.Builder().setBarcodeFormats(
+        val options = BarcodeScannerOptions.Builder()
+        if (mode == ScanMode.GROUP_JOIN) options.setBarcodeFormats(Barcode.FORMAT_QR_CODE)
+        else options.setBarcodeFormats(
             Barcode.FORMAT_EAN_13, Barcode.FORMAT_EAN_8, Barcode.FORMAT_UPC_A, Barcode.FORMAT_UPC_E,
-            Barcode.FORMAT_CODE_128, Barcode.FORMAT_DATA_MATRIX, Barcode.FORMAT_QR_CODE).build())
+            Barcode.FORMAT_CODE_128, Barcode.FORMAT_DATA_MATRIX, Barcode.FORMAT_QR_CODE)
+        val scanner = BarcodeScanning.getClient(options.build())
         var provider: ProcessCameraProvider? = null
         var preview: Preview? = null
         var analysis: ImageAnalysis? = null
@@ -58,7 +68,9 @@ import java.util.concurrent.atomic.AtomicBoolean
                     provider = future.get()
                     preview = Preview.Builder().build().also { it.surfaceProvider = view.surfaceProvider }
                     analysis = ImageAnalysis.Builder().setBackpressureStrategy(ImageAnalysis.STRATEGY_KEEP_ONLY_LATEST).build().also { a ->
-                        a.setAnalyzer(executor) { proxy -> analyze(proxy, scanner) { raw ->
+                        a.setAnalyzer(executor) { proxy -> analyze(proxy, scanner, mode, {
+                            if (!disposed.get()) error = "不是有效的分组码二维码，或画面中有多个分组码，请重新对准"
+                        }) { raw ->
                             if (!disposed.get() && accepted.compareAndSet(false, true)) onScanned(raw)
                         } }
                     }
@@ -76,10 +88,16 @@ import java.util.concurrent.atomic.AtomicBoolean
 }
 
 @androidx.annotation.OptIn(androidx.camera.core.ExperimentalGetImage::class)
-private fun analyze(proxy: ImageProxy, scanner: com.google.mlkit.vision.barcode.BarcodeScanner, scanned: (String) -> Unit) {
+private fun analyze(proxy: ImageProxy, scanner: com.google.mlkit.vision.barcode.BarcodeScanner, mode: ScanMode,
+    invalid: () -> Unit, scanned: (String) -> Unit) {
     val image = proxy.image
     if (image == null) { proxy.close(); return }
     scanner.process(InputImage.fromMediaImage(image, proxy.imageInfo.rotationDegrees))
-        .addOnSuccessListener { codes -> preferredMedicineCode(codes.mapNotNull { it.rawValue })?.let(scanned) }
+        .addOnSuccessListener { codes ->
+            val values = codes.mapNotNull { it.rawValue }
+            val selected = if (mode == ScanMode.GROUP_JOIN) preferredGroupJoinCode(values) else preferredMedicineCode(values)
+            if (selected != null) scanned(selected)
+            else if (mode == ScanMode.GROUP_JOIN && values.isNotEmpty()) invalid()
+        }
         .addOnCompleteListener { proxy.close() }
 }

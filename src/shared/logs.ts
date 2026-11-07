@@ -11,6 +11,7 @@ export const logActions: Record<string, string> = {
   'auth.recovery.options': '验证恢复码操作', 'auth.recovery.regenerate': '重新生成恢复码',
   'admin.reset': '重置管理员', 'group.create': '创建家庭', 'group.update': '修改家庭',
   'admin.passkey.list': '查看管理员通行密钥', 'admin.passkey.delete': '删除管理员通行密钥',
+  'download.settings.read': '查看应用下载配置', 'download.settings.update': '修改应用下载配置',
   'group.rotate': '更换分组码', 'member.update': '修改成员',
   'warehouse.create': '创建药箱', 'warehouse.update': '修改药箱', 'warehouse.delete': '删除药箱',
   'product.create': '创建药品', 'product.update': '修改药品',

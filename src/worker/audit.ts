@@ -19,6 +19,8 @@ const policies: Policy[] = [
   ['POST', '/admin/users/:id/reset', 'admin.reset', 'global'],
   ['GET', '/admin/passkeys', 'admin.passkey.list', 'global'],
   ['DELETE', '/admin/users/:id/passkeys', 'admin.passkey.delete', 'global'],
+  ['GET', '/admin/download', 'download.settings.read', 'global'],
+  ['PUT', '/admin/download', 'download.settings.update', 'global'],
   ['POST', '/groups', 'group.create', 'target-group'],
   ['PUT', '/groups/:id', 'group.update', 'target-group'],
   ['POST', '/groups/:id/rotate-code', 'group.rotate', 'target-group'],

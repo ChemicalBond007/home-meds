@@ -3,7 +3,7 @@ plugins {
     id("org.jetbrains.kotlin.plugin.compose")
 }
 
-val baseUrl = providers.gradleProperty("homeMedsBaseUrl").getOrElse("https://home-meds.pages.dev").trimEnd('/')
+val baseUrl = providers.gradleProperty("homeMedsBaseUrl").getOrElse("https://your-domain.example.com").trimEnd('/')
 require(Regex("^https://[A-Za-z0-9.-]+(:\\d+)?$").matches(baseUrl)) { "homeMedsBaseUrl must be an HTTPS origin" }
 
 android {
@@ -13,8 +13,8 @@ android {
         applicationId = "com.homemeds.app.v2"
         minSdk = 29
         targetSdk = 36
-        versionCode = 20400
-        versionName = "2.4.0"
+        versionCode = 20500
+        versionName = "2.5.0"
         buildConfigField("String", "BASE_URL", "\"$baseUrl\"")
     }
     buildFeatures { buildConfig = true; compose = true }

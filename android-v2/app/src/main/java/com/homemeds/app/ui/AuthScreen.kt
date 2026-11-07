@@ -30,30 +30,25 @@ import org.json.JSONObject
     var username by remember { mutableStateOf("") }
     var credential by remember { mutableStateOf("") }
     var recovery by remember { mutableStateOf(false) }
-    var joinCode by remember { mutableStateOf("") }
-    var elderly by remember { mutableStateOf(false) }
     Page("赛博药箱") {
         Text("把家人的用药，记在一起。", style = MaterialTheme.typography.titleLarge)
         Text("原生 Android · 本地日历 · 到点提醒", color = Muted)
         Panel {
-            Tabs(listOf("成员登录", "注册成员", "管理员"), tab) { tab = it; credential = "" }
-            Field("用户名", username, { username = it })
-            if (tab == 1) {
-                Field("家庭分组码", joinCode, { joinCode = it })
-                Check("开启老人模式（大字、大按钮）", elderly, { elderly = it })
-            }
-            if (tab == 2) {
-                Check("使用一次性密码或恢复码（需重新绑定）", recovery, { recovery = it; credential = "" })
-                Field(if (recovery) "一次性密码 / 恢复码" else "验证器 6 位验证码", credential, { credential = it }, secret = true)
-                if (recovery) Text("恢复码会重置已有验证器与通行密钥。登录后请重新绑定。", color = Red)
-            }
-            Action(if (tab == 1) "注册并登录" else "登录", enabled = !state.busy && username.isNotBlank() &&
-                (tab != 1 || joinCode.isNotBlank()) && (tab != 2 || credential.isNotBlank())) {
-                vm.authenticate(if (tab == 1) "/auth/register" else "/auth/login", json("username" to username.trim()).apply {
-                    if (tab == 1) { put("join_code", joinCode.trim()); put("is_elderly", elderly) }
-                    if (tab == 2) put(if (recovery) "secret" else "code", credential.trim())
-                })
-                credential = ""
+            Tabs(listOf("成员登录", "注册成员", "管理员"), tab) { if (!state.busy) { tab = it; credential = "" } }
+            if (tab == 1) MemberRegistrationForm(state.busy, { vm.authenticate("/auth/register", it) })
+            else {
+                Field("用户名", username, { username = it }, enabled = !state.busy)
+                if (tab == 2) {
+                    Check("使用一次性密码或恢复码（需重新绑定）", recovery, { recovery = it; credential = "" })
+                    Field(if (recovery) "一次性密码 / 恢复码" else "验证器 6 位验证码", credential, { credential = it }, secret = true)
+                    if (recovery) Text("恢复码会重置已有验证器与通行密钥。登录后请重新绑定。", color = Red)
+                }
+                Action("登录", enabled = !state.busy && username.isNotBlank() && (tab != 2 || credential.isNotBlank())) {
+                    vm.authenticate("/auth/login", json("username" to username.trim()).apply {
+                        if (tab == 2) put(if (recovery) "secret" else "code", credential.trim())
+                    })
+                    credential = ""
+                }
             }
         }
         Text("成员账号遵循现有服务端登录规则。管理员凭证仅发送至赛博药箱 API。", color = Muted)

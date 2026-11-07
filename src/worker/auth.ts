@@ -85,24 +85,26 @@ auth.use('*', async (c, next) => {
     }
   }
   const path = c.req.path.replace('/api', '');
-  const publicPaths = ['/auth/register', '/auth/login', '/auth/admin/login', '/auth/passkey/options', '/auth/passkey/login', '/health'];
+  const publicPaths = ['/auth/register', '/auth/login', '/auth/admin/login', '/auth/passkey/options', '/auth/passkey/login', '/health', '/download'];
   if (!publicPaths.includes(path) && !c.get('user')) fail(401, '请先登录');
   if (c.get('session')?.binding_only && ![
     '/auth/me', '/auth/logout', '/auth/totp/setup', '/auth/totp/bind', '/auth/passkey/register/options', '/auth/passkey/register',
-    '/app/bootstrap', '/admin/bootstrap',
+    '/app/bootstrap', '/admin/bootstrap', '/download',
   ].includes(path)) fail(403, '请先绑定验证器或通行密钥');
   await next();
 });
 auth.post('/auth/register', async c => {
-  const data = await json(c, z.object({ username, join_code: z.string().min(1).max(100), is_elderly: z.boolean().default(false) }));
+  const data = await json(c, z.object({ join_code: z.string().trim().min(1, '请先输入分组码').max(100), username, is_elderly: z.boolean().default(false) }));
   c.set('auditSubject', data.username);
   await limit(c.env.DB, `register:${c.req.header('CF-Connecting-IP') || 'local'}`, 10, 3600);
-  const g = await c.env.DB.prepare('SELECT id FROM groups WHERE join_code=?').bind(data.join_code.trim()).first<{ id: string }>();
-  if (!g) fail(400, '分组码无效');
   const id = crypto.randomUUID();
+  let created: D1Result;
   try {
-    await c.env.DB.prepare('INSERT INTO users(id,username,group_id,is_elderly) VALUES(?,?,?,?)').bind(id, data.username, g.id, Number(data.is_elderly)).run();
+    // Resolve the current code in the insert itself, so a rotated code cannot be used after a prior lookup.
+    created = await c.env.DB.prepare(`INSERT INTO users(id,username,group_id,is_elderly)
+      SELECT ?,?,id,? FROM groups WHERE join_code=?`).bind(id, data.username, Number(data.is_elderly), data.join_code).run();
   } catch { fail(409, '用户名已被使用'); }
+  if (!created.meta.changes) fail(400, '分组码无效或已更换，请向管理员索取新码');
   await session(c, id);
   return c.json({ ok: true });
 });

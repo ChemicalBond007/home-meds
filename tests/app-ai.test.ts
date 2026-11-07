@@ -46,7 +46,7 @@ describe('Android app AI sessions', () => {
     expect(JSON.stringify(body)).not.toContain('phone-llm-key');
     expect(body.credentials.alg).toBe('RSA-OAEP-SHA1+A256GCM');
     expect(await open(body.credentials, keys.pair.privateKey)).toMatchObject({
-      session_id: body.session_id, llm_key: 'phone-llm-key', tavily_key: 'phone-tavily-key', llm_base_url: 'https://claw.shu.edu.cn/api',
+      session_id: body.session_id, llm_key: 'phone-llm-key', tavily_key: 'phone-tavily-key', llm_base_url: 'https://llm.example.com/api',
     });
     expect(fetchSpy).not.toHaveBeenCalled();
     expect(await env.DB.prepare("SELECT count FROM ai_usage WHERE kind='lookup'").first('count')).toBe(1);
@@ -101,7 +101,7 @@ describe('shared agent loops on an injected HTTP client', () => {
     const events: [string, unknown][] = [];
     await runLookup({ settings, key: 'hm-key:s:llm', searchKey: 'hm-key:s:tavily', query: '虚构药', http, emit: async (e, d) => { events.push([e, d]); } });
     expect(globalFetch).not.toHaveBeenCalled();
-    expect(seen).toEqual(['https://api.tavily.com/search Bearer hm-key:s:tavily', 'https://claw.shu.edu.cn/api/chat/completions Bearer hm-key:s:llm']);
+    expect(seen).toEqual(['https://api.tavily.com/search Bearer hm-key:s:tavily', 'https://llm.example.com/api/chat/completions Bearer hm-key:s:llm']);
     expect(events.at(-1)).toMatchObject(['result', { name: '虚构药', requires_confirmation: true }]);
   });
   it('stages drafts returned by a remote tool executor and reports remote tool errors', async () => {

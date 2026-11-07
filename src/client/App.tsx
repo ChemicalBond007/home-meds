@@ -4,6 +4,12 @@ import { Login, Security } from './Auth';
 import { Message, errorText, Icon } from './components';
 import { AdminSettings, adminSections, type AdminSection } from './AdminSettings';
 import type { AdminBootstrap } from '../shared/bootstrap';
+import { isDownloadPath } from '../shared/download';
+import { DownloadPage } from './DownloadPage';
+
+export function Site({ pathname = window.location.pathname }: { pathname?: string }) {
+  return isDownloadPath(pathname) ? <DownloadPage /> : <App />;
+}
 
 export function App() {
   const [data, setData] = useState<AdminBootstrap>(), [loading, setLoading] = useState(true);

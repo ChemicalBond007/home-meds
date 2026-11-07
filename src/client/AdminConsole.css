@@ -1,5 +1,6 @@
 .admin-shell{min-height:100dvh;background:#f4f6f3}
-@media(max-width:700px){.admin-shell .admin-sidebar nav{grid-template-columns:repeat(3,minmax(0,1fr))}}
+.group-join-qr svg{display:block;max-width:100%;height:auto;margin:20px auto}.group-join-qr .secret{overflow-wrap:anywhere;white-space:normal}
+@media(max-width:700px){.admin-shell .admin-sidebar nav{grid-template-columns:repeat(4,minmax(0,1fr))}}
 .admin-shell .panel h2{letter-spacing:-.02em}.admin-shell .admin-member strong{overflow-wrap:anywhere}
 .passkey-admin{border-top:1px solid #dce3dc;padding-top:18px;margin-top:18px;min-width:0}.passkey-admin h3{overflow-wrap:anywhere}
 .passkey-row{display:flex;align-items:center;gap:16px;padding:16px 0;border-bottom:1px solid #e0e7de}.passkey-row>div{flex:1;min-width:0}.passkey-row>button{flex-shrink:0}.passkey-row p{margin:4px 0}.passkey-id{display:block;overflow-wrap:anywhere;white-space:normal;font-size:.75rem}

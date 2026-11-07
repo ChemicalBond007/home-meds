@@ -5,6 +5,7 @@ import type { AdminBootstrap, AppBootstrap, Warehouse } from '../shared/bootstra
 import { localClock, todayTodos } from '../shared/schedule';
 import { settingsState } from './ai-config';
 import { adminPasskeys } from './passkeys';
+import { getDownloadSettings } from './download';
 
 export const bootstrap = new Hono<AppEnv>();
 const userColumns = 'id,username,role,group_id,is_elderly';
@@ -39,7 +40,7 @@ export async function adminBootstrap(c: Ctx, fresh = false): Promise<AdminBootst
   return { api_version: 1, user, binding_only: false, groups, group_id: family?.id ?? null,
     users, members: users.filter(u => u.group_id === family?.id), warehouses: rows[1].results as Warehouse[],
     security: { remaining: security.remaining, totp: !!security.totp, passkeys: security.passkeys },
-    passkey_admins: await adminPasskeys(c), ai: await settingsState(c.env) };
+    passkey_admins: await adminPasskeys(c), ai: await settingsState(c.env), download: await getDownloadSettings(c.env) };
 }
 
 export async function appBootstrap(c: Ctx, fresh = false): Promise<AppBootstrap> {

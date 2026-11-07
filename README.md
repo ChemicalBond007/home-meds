@@ -1,233 +1,238 @@
-# 赛博药箱
+# 赛博药箱（HomeMeds）
 
-Cloudflare Pages 提供管理员设置中心，Worker 提供 Hono API 和五分钟一次的服药提醒，使用 D1，不需要自备域名或 R2。网页版仅供管理员访问，只保留账号安全、家庭设置和 AI 配置；日常用药、药品入库、计划和使用日志请使用原生 Android 客户端。
+**赛博药箱**（仓库与包名 `home-meds`，早期名称「家药箱」）是一套面向家庭日常用药场景的服药计划、药盒库存与提醒管理系统。
 
-独立原生 Android 2.0 客户端位于 [`android-v2/`](android-v2/README.md)，使用 Jetpack Compose 与现有 JSON/SSE API，保留 `android/` 1.0 工程不变。
+后端基于 **Cloudflare Worker + Hono + D1** 构建，无需自备域名或 R2 存储；前端网页（**Cloudflare Pages**，「赛博药箱管理台」）为管理员提供账号安全、家庭设置、AI 配置与应用下载设置，另提供无需登录的公开下载页；家庭成员的日常服药打卡、扫码/拍照查药入库、服药计划管理、AI 对话助手与管理员全局使用日志由独立原生 **Android 2.x 客户端**（[`android-v2/`](android-v2/README.md)，Jetpack Compose）承载。早期 `android/` 1.0 WebView 工程保留在仓库中作为历史归档。
 
-## 管理台与请求优化
+---
 
-- 网页仅提供管理员登录。已有普通成员会话访问管理台会被拒绝，不影响其手机端和原有 API 权限。临时绑定会话只能绑定验证方式。
-- 「账号安全 → 通行密钥管理」按管理员列出本人和其他管理员已登记的密钥，可逐把确认删除。列表显示密钥标识与已记录的连接方式；历史记录没有设备名称，列表不代表密钥当前可在本机使用。删除最后一把会提示恢复访问风险，但仍允许撤销。删除仅撤销该密钥及该管理员尚未完成的通行密钥认证挑战，不重置验证器、恢复码或现有会话，也不删除设备 / 密码管理器中的副本。普通成员和仅绑定权限会话不能列举或删除；操作写入管理员审计，不记录凭据原文。
-- 「账号安全」管理验证器、通行密钥和恢复码；「家庭设置」管理家庭、成员、药箱及管理员身份重置；「AI 配置」管理模型、搜索来源和额度。保存或展示一次性凭据时禁止切换设置、家庭或退出，避免丢失结果。
-- 管理台首次加载只请求一次 `GET /api/admin/bootstrap`，同时取得账号安全状态、家庭资料和不含密钥原文的 AI 配置。切换设置分类不重复加载；AI 保存直接使用 PUT 的返回状态。
-- APK 通过 `GET /api/app/bootstrap` 聚合用户、家庭、今日清单、库存、计划和药箱；后台提醒通过 `GET /api/app/sync` 一次取得计划和时区。旧版服务端返回 404/405/501 时回退分项接口；聚合数据超过 2 MiB 时也回退分项读取，不把写入重新提交。
-- 家庭数据保存携带 `X-HomeMeds-State: admin` 或 `app`，成功响应附带更新后的 `admin_state` / `app_state`，省去保存后的重复读取。快照生成失败仍保留写入成功结果，仅刷新读取，不重试已提交操作。现有客户端不带此头时保持原响应。
-- APK 已取得的计划快照直接用于本地日历和闹钟重建，不再为同一操作重复同步请求；主动刷新和后台校验仍读取服务器，不用旧服药状态代替实时核对。
+## 文档导航
 
-上述改动随 APK `2.4.0 / 20400` 提供，Worker 与 Pages 独立部署，不沿用 APK 版本号。
+| 文档 | 内容说明 |
+| :--- | :--- |
+| [`README.md`](README.md)（本文档） | 项目总览、核心功能、本地开发、部署流程、测试检查、目录结构与安全边界 |
+| [`android-v2/README.md`](android-v2/README.md) | 原生 Android 2.x 客户端（Jetpack Compose）编译、功能细节、AI Agent Loop、本地提醒与 SemVer 版本策略 |
+| [`android/README.md`](android/README.md) | 历史保留的 Android 1.0 WebView 外壳工程说明、编译方式与向 2.x 迁移注意事项 |
+| [`docs/architecture.md`](docs/architecture.md) | 系统架构拓扑、源码模块职责、D1 数据库 Schema 与触发器、加密认证模型、AI 搜索与提醒设计 |
+| [`docs/api.md`](docs/api.md) | Worker HTTP / SSE 接口手册（聚合同步、认证安全、药品库存、计划服药、AI 与全局使用日志） |
 
-## 本地运行
+---
 
-需要 Node.js 24。
+## 系统组成与端侧分工
+
+### 公开应用下载
+
+访客直接打开 `/download`（也兼容 `/downloads`）即可查看简洁的安卓版下载页，无需登录，不读取管理员会话或家庭资料。管理员在「应用下载」中保存 APK 的公开 HTTPS 下载链接，页面按钮随配置更新；留空保存可关闭下载，未配置时明确提示「暂未开放下载」。签名下载链接和无 `.apk` 后缀的 HTTPS 地址也受支持，临时链接过期后需由管理员更新。
+
+本站只保存链接，不上传、代理或转存安装包，也不会在服务端请求下载目标。链接对所有访客公开，请勿填入私密凭据；配置接口仅限完整管理员会话，并检查同源请求及记录审计。现有网址、模型地址和 APK 默认服务器的脱敏占位配置保持不变。
+
+| 端侧 / 模块 | 目录 | 技术栈 | 主要职责 |
+| :--- | :--- | :--- | :--- |
+| **网页管理台与下载页** | `src/client/`、`pages/` | React 19 + Vite 8 + TypeScript | **管理台仅限管理员访问，下载页公开**。提供「账号安全」（TOTP 验证器、WebAuthn 通行密钥、恢复码）、「家庭设置」（家庭、成员、药箱、管理员重置）、「AI 配置」（模型、搜索来源、配额与接口检测）及「应用下载」（APK 下载链接）。普通成员会话访问管理台会被拒绝，但可访问 `/download`，且不影响其手机端权限。 |
+| **服务端 API 与定时任务** | `src/worker/`、`migrations/` | Cloudflare Worker + Hono + D1 + WebCrypto | 提供 REST / SSE API、D1 关系型数据存储与 SQLite 事务触发器、HKDF/AES-GCM 密钥加解密、操作审计日志，以及每 5 分钟运行的 Cron Web Push 提醒任务。 |
+| **跨端共享模型** | `src/shared/` | TypeScript + Zod 4 | 前后端共用的数据校验 Schema、GS1 / GTIN / 20 位药品追溯码解析器、跨时区/DST 日程计算与今日清单状态推导。 |
+| **原生 Android 2.x 客户端（推荐）** | `android-v2/` | Kotlin + Jetpack Compose + CameraX + ML Kit + ZXing + WorkManager | 应用 ID `com.homemeds.app.v2`（当前 `2.5.0 / 20500`）。支持分组码优先注册与扫码填写；承载普通成员、老人模式与管理员的全部日常功能：今日清单、两步核对服药、扫码/多角度拍照识药入库、有效期/批号特写识别、库存流水、服药计划、AI 语音/多模态助手、本地日历与精确闹钟提醒，以及管理员全局使用日志。 |
+| **历史 Android 1.0 外壳（归档）** | `android/` | Kotlin + WebView + JS Bridge | 应用 ID `com.homemeds.app`（`1.0.0 / 1`）。早期包裹网页版的 WebView 外壳；因新网页版已精简为纯管理员设置台，日常使用请安装 2.x 客户端。 |
+
+---
+
+## 核心功能概览
+
+### 1. 扫码与多角度拍照识药入库
+- **多码制本地解析**：支持 GS1（含 `(01)` GTIN、`(17)` 有效期、`(10)` 批号、`(21)` 序列号）、13/14 位 GTIN/EAN 商品条码、中国 20 位药品追溯码及含追溯码参数的网址。Android 2.x 使用本地 ML Kit 与 ZXing 离线识别，同画面下优先提取 20 位追溯码。
+- **双层药品与药盒模型**：
+  - **药品资料（`products`）**：记录本家庭共用的药名、通用名、规格、厂家、基本单位、默认每盒数量、适应症与注意事项，以及条码/追溯码前 7 位映射（`product_codes`）。普通成员可新建药品资料，**仅管理员可修改已有资料**；已关联库存或计划的药品禁止修改基本单位，防止历史数量语义错乱。
+  - **在库药盒（`stock_items`）**：每盒独立记录所属药箱（`warehouses`）、有效期截止日、批号、序列号、20 位追溯码（全库防重）、每盒装量、当前剩余数量、开封状态与乐观锁版本号（`metadata_version`）。有效期与批号归属具体药盒而非共用药品资料。
+- **多角度拍照与特写日期识别（Android 2.x）**：支持同一药盒最多 6 张照片（正面、背面、侧面、盒底、说明书）合并识别，以及在入库第二步或药盒资料编辑中单独拍摄特写识别有效期与批号。支持完整日期（`YYYY-MM-DD`）与仅年月（如 `2028-06`，表单提示确认保存时按当月实际月末日记录）。**AI 仅做预填草稿，必须人工核对实物后才写入数据库**。
+
+### 2. 服药计划、今日清单与原子扣库存
+- **灵活周期与实时计算**：支持每天（`daily`）、每周固定日（`weekly`）、每隔 N 天（`interval`）与按需（`as_needed`）四类频率，按家庭所在时区（默认 `Asia/Shanghai`）实时计算今日服药清单，不预先生成每日冗余行。超过计划时间 60 分钟未记录自动标为「过时未吃（`overdue`）」。
+- **优先药盒与两步实物核对**：
+  - 计划可指定一盒「优先药盒」（`preferred_stock_item_id`）；未指定时默认沿用上次服药使用的可用药盒（`last_stock_item_id`），按「已开封优先、到期早优先」排序。若优先药盒已用尽或报废，不会静默改扣其他药盒，必须由用户重新选择。
+  - 服药采用**两步确认**：确认时间、用量与目标药盒，并勾选「已核对实物药名、规格、有效期、批号及用量」；若药盒已过期，还须额外勾选过期二次确认。
+- **D1 触发器原子校验与当日撤销**：
+  - 提交服药记录时携带药盒 `expected_stock_version`，由 SQLite 触发器在事务内一次性完成家庭归属、基本单位一致性、资料版本乐观锁、可用余量校验、扣减库存、自动标记开封/用尽、写入 `stock_movements` 流水并更新计划的 `last_stock_item_id`。
+  - 唯一索引阻止同一计划同一时间点重复勾选，并发请求也不会把库存扣成负数。当日撤销（`undo`）在同一事务内原子恢复库存且仅允许恢复一次。
+
+### 3. 老人模式与无障碍设计
+- 老人账号（`is_elderly = 1`）默认展示极简大字今日清单，隐藏计划与 AI 助手底部导航，控件触控区域至少 `60px`/`60dp`、正文字号放大（`22sp`），所有状态均采用「文字 + 符号」双重表达，并在系统支持时提供中文语音朗读（TTS）与语音输入。
+- **绝不缓存过期的今日服药清单**：离线时明确提示无法记录，避免因陈旧状态造成漏服或重复服药。
+
+### 4. 双轨服药提醒（Web Push + Android 本地日历与闹钟）
+- **服务端 Cron Web Push**：每 5 分钟扫描未记录的服药项，到点向本人已订阅设备发送 RFC 8291 `aes128gcm` + RFC 8292 VAPID 加密推送；超过计划时间 30 分钟仍未记录且开启「通知家人」时，向同家庭已订阅的非老人成员发送提醒（包含跨午夜的前一日晚间计划检查）。通过 `notification_log` 去重，点击通知仅打开核对确认流程，**不能在通知栏直接勾掉**。
+- **Android 本地日历与精确闹钟**：将所选家人的计划按家庭时区与 `RRULE` 同步至本机私有本地日历「赛博药箱」（不同步云端账号），并预先编排未来 48 小时系统闹钟。闹钟触发时先向服务器实时核对计划与服药状态，已服药或计划已暂停则静默跳过；离线无法核对时仍发出提醒并注明「尚未联网核对」。
+
+### 5. AI 查药与计划对话助手
+- **双提供商模式**：支持「DeepSeek（官方，固定 `https://api.deepseek.com`）」与「其他 LLM（任意 OpenAI 兼容地址，默认示例 `https://llm.example.com/api` + `qwen3.5-27b`）」。
+- **内置搜索与外部搜索**：
+  - **内置搜索**：支持 OpenAI Responses API `web_search`、Chat Completions 联网参数（默认 `enable_search=true` 或自定义 JSON 如 `{"web_search_options":{}}`）以及 Anthropic 兼容 `/v1/messages` 服务端 `web_search`（DeepSeek 默认）。后台提供一键「检测内置搜索并自动选择搜索来源」，仅当接口返回结构化引用/搜索结果块时才采信。正式查询若内置搜索失败或无来源会明确报错，**不会隐式回退到外部搜索**。
+  - **外部搜索**：支持 Tavily Search API 与可选的 DuckDuckGo HTML 检索，配合逐跳校验公网地址、防 SSRF 的 `fetch_page` 工具（10 秒超时、2 MB 响应上限、提取正文截断至 20 KB、仅允许读取本轮搜索结果中的 URL）。
+- **只读工具与待确认草稿隔离**：对话助手通过 `find_medicines` 与 `list_medicines` 只读检索本家庭药箱目录，通过 `add_plan_draft`、`propose_plan_update`、`propose_plan_pause` 生成经过 Zod 校验的待确认计划卡片（Android 2.x 还支持 `propose_medicine_draft` 药品入库草稿）。**AI 工具无任何数据库写权限**，所有草稿仅保存在客户端内存中，必须由用户打开卡片核对确认后才调用正式写接口落库。
+- **手机端安全直连**：Android 客户端通过系统 Keystore 生成 RSA-2048 密钥对，经 `POST /api/app/ai/session` 接收由 RSA-OAEP-SHA1 + AES-256-GCM 封装的 15 分钟临时凭据，仅在原生层解密并严格注入到已配置的提供商 HTTPS 根路径下（禁止重定向），数据库工具仍回调 Worker `/api/app/ai/tool` 执行。
+
+### 6. 请求聚合与写后快照优化
+- **管理台一次初始化**：网页管理台首次加载仅请求一次 `GET /api/admin/bootstrap`，一次性获取账号安全状态（含通行密钥列表与恢复码余量）、家庭/成员/药箱列表及脱敏 AI 配置。
+- **手机端聚合加载与后台同步**：Android 2.4.0+ 冷启动仅请求一次 `GET /api/app/bootstrap` 获取完整家庭状态；后台 WorkManager 与闹钟刷新仅请求一次 `GET /api/app/sync` 获取计划与时区。旧服务端返回 `404/405/501` 或单家庭聚合体积超过 `2 MiB` 时自动回退分项接口。
+- **写操作附带状态快照**：客户端修改家庭数据时携带请求头 `X-HomeMeds-State: admin` 或 `app`，服务端在同一响应中直接返回最新 `admin_state` / `app_state`，省去保存后的二次刷新请求，且在 Android 端直接复用响应中的计划快照重建本地日历与闹钟。
+
+### 7. 管理员安全、操作审计与全局使用日志
+- **多因素绑定与恢复**：首位管理员通过命令行生成 7 天有效的临时密码登录（处于 `binding_only` 受限会话），在浏览器本地生成 TOTP 二维码（不调用外部二维码服务）或注册 WebAuthn 通行密钥后，自动签发 10 个一次性恢复码并使临时密码失效。支持按管理员查看与逐把撤销通行密钥，以及通过二次验证（TOTP 或通行密钥）重新生成恢复码。
+- **五类全局使用日志**：全局管理员可在 Android 2.x「设置 → 使用日志」跨家庭筛选查看 **操作审计（`audit`）、AI 查询明细（`ai_queries`）、AI 配额用量（`ai_usage`）、服药记录（`doses`）、库存流水（`stock`）**，支持游标分页。操作审计仅记录时间、用户/家庭快照、操作类型、HTTP 状态、路由模板与对象编号，**绝不记录密码、验证码、恢复码、密钥、Cookie、IP 或聊天原文**；审计写入失败时记录 `audit_write_failed` 告警，不会使已提交的业务操作报错回滚。
+
+---
+
+## 快速开始（本地开发）
+
+### 环境要求
+- **Node.js 24+** 与 npm
+- 构建原生 Android 客户端需 **JDK 21** 与 **Android SDK Platform 37**（详见 [`android-v2/README.md`](android-v2/README.md)）
+
+### 1. 安装依赖与初始化本地数据库
 
 ```powershell
-cd E:\Temp\Projects\home-meds
 npm ci
 npm run db:local
+```
+
+### 2. 配置本地环境变量
+
+将 `.dev.vars.example` 复制为 `.dev.vars`（已被 `.gitignore` 忽略，**切勿提交或把密钥发到聊天中**）：
+
+```powershell
+Copy-Item .dev.vars.example .dev.vars
+```
+
+在 `.dev.vars` 中填写本地随机生成的 `APP_ENC_KEY`（至少 32 字符，用于派生 TOTP 与后台 AI 密钥的 AES-GCM 加密密钥）：
+
+```ini
+APP_ENC_KEY=请替换为本机生成的至少32位高熵随机字符串
+VAPID_PRIVATE_KEY=
+# 以下变量仅供 npm run probe:ai 命令行探测脚本使用，Worker 正式运行只读取管理后台加密保存的配置
+LLM_BASE_URL=https://llm.example.com/api
+LLM_API_KEY=
+LLM_MODEL=qwen3.5-27b
+TAVILY_API_KEY=
+```
+
+### 3. 构建并启动本地服务
+
+```powershell
 npm run build
 npm run dev:worker
 ```
 
-打开 `http://127.0.0.1:8787`。开发前端时，同时运行 `npm run dev`，打开 Vite 提供的地址，API 代理到 8787。不要使用 `--host 0.0.0.0` 向外网暴露本地药箱。
+- 打开浏览器访问 `http://127.0.0.1:8787` 即可使用本地 Worker 托管的管理台与 API。
+- 如需前端热更新联调，保持 `npm run dev:worker` 运行，另开终端执行 `npm run dev`，访问 Vite 地址 `http://127.0.0.1:5173`（`/api` 请求会自动代理至 `127.0.0.1:8787`）。
+- **安全提示**：本地开发服务固定绑定 `127.0.0.1`，请勿使用 `--host 0.0.0.0` 将本地药箱暴露到局域网或公网。
 
-可选的本地演示数据：
+### 4. 可选：导入本地演示数据
 
 ```powershell
 npm run db:demo
 ```
 
-演示用户名：`演示家人`、`演示老人`。分组码为 `DEMO-LOCAL-ONLY`。数据只有明确标识的虚构药品，**不要用于真实用药，不要把演示 SQL 应用到远程数据库**。
+- 演示账号用户名：`演示家人`、`演示老人`，演示家庭分组码：`DEMO-LOCAL-ONLY`。
+- **警告**：`tests/fixtures/demo.sql` 仅包含明确标记的虚构演示药品，**严禁用于真实服药指导，严禁导入远程生产数据库**。
 
-## 首位管理员
-
-先复制 `.dev.vars.example` 为 `.dev.vars`，在本机安全生成并填写至少 32 字符的随机 `APP_ENC_KEY`。不要把密钥发到聊天里，也不要提交此文件。`LLM_API_KEY`、`TAVILY_API_KEY` 仅供探测脚本使用，Worker 正式查询只读取管理后台加密保存的配置。
+### 5. 创建首位管理员并完成安全绑定
 
 ```powershell
 npm run admin:create -- 管理员名字
 ```
 
-命令只写本地 D1，并显示一个 7 天有效的临时密码。在管理台「使用临时密码或恢复码」中填写。此时只有绑定权限。完成通行密钥或验证器绑定后，临时密码和旧恢复码失效，显示 10 个新恢复码。请离线保存。
+1. 命令向本地 D1 写入管理员账号，并在终端输出一个 **7 天有效的临时密码**。
+2. 打开管理台登录页，展开「使用临时密码或恢复码」登录（此时处于 30 分钟有效的 `binding_only` 受限绑定会话）。
+3. 在页面上完成 **通行密钥（WebAuthn）** 或 **身份验证器（TOTP）** 绑定：
+   - **Microsoft Authenticator**：选择「`+` → 添加帐户 → 其他帐户 → 扫描二维码」（不要选「工作或学校帐户」），或支持 Google Authenticator 等标准 TOTP 应用（`otpauth://totp`，前缀 `HomeMeds`，SHA-1、6 位、30 秒）。
+   - 扫码仅导入密钥，必须在页面输入当前 6 位动态验证码提交后才算完成绑定。
+4. 绑定成功后，临时密码与旧恢复码立即作废，页面将**唯一一次**展示 10 个新恢复码，请立即离线妥善保存。
+5. 随后可在「家庭设置」中创建家庭，点击「显示分组码二维码」向可信家人展示。Android「注册成员」先手动输入分组码或扫码填写，再填写用户名并确认注册；空白、错误或已更换的分组码不能创建账号。扫码不自动注册、不更改服务器地址。也可在「AI 配置」中填入正式的 LLM / Tavily 密钥。
 
-绑定验证器时会在浏览器本地生成二维码，不调用第三方二维码服务。Microsoft Authenticator 请选择「＋ → 添加帐户 → 其他帐户 → 扫描二维码」（不是「工作或学校帐户」）；Google Authenticator 等标准 TOTP 应用也可扫描。同一部手机上可尝试「在支持的验证器中打开」，或展开手动密钥。使用 `otpauth://totp`，服务与账号标签前缀均为 `HomeMeds`，SHA-1、6 位、30 秒。扫码仅导入账号，仍须提交当前验证码才完成绑定；二维码和密钥不要分享，取消或绑定成功后页面会清除它们。此改动不影响已绑定的验证器。
+分组码二维码在浏览器本地生成，内容为 `{"type":"home-meds.join","version":1,"code":"分组码"}`，不包含网站、API 地址或密钥，不访问第三方二维码服务。更换分组码后旧二维码立即失效，已注册成员不受影响。二维码等同于家庭注册邀请，请勿公开分享。
 
-恢复码丢失或可能泄露时，在管理台「账号安全 → 恢复码」或 APK「设置 → 提醒与账号 → 恢复码」重新生成。生成前必须再次验证：输入验证器当前验证码，或使用通行密钥。验证码用过一次即失效。通行密钥挑战只对发起它的会话有效，不能拿去登录。生成后旧恢复码全部立即失效，新的 10 个只显示一次。已登录的会话不受影响。每个管理员每 10 分钟最多尝试 10 次。
+---
 
-管理员先创建家庭，把分组码交给家人在手机应用注册。管理员可在管理台「家庭设置 → 成员与所属家庭」把自己加入家庭；全局管理员也可以直接切换家庭管理。普通成员只能看到本家庭，不接受客户端伪造的家庭选择。
+## 常用 NPM 脚本速查
 
-普通用户按用户名登录，这是本项目明确接受的弱认证方案，不适合开放注册、医疗机构或高隐私场景。管理员重置会撤销目标管理员的会话和验证方式。使用恢复码也会撤销已有验证方式，然后要求重新绑定。
+| 命令 | 说明 |
+| :--- | :--- |
+| `npm run dev` | 启动 Vite 前端开发服务器（`127.0.0.1:5173`，代理 `/api` 到 `8787`） |
+| `npm run dev:worker` | 启动本地 Wrangler Worker 开发服务（`127.0.0.1:8787`） |
+| `npm run build` | 执行 TypeScript 类型检查、Vite 生产构建，并运行 `scripts/check-built-css.mjs` 校验 WebView 87 媒体查询兼容性 |
+| `npm run check` | 运行 `tsc --noEmit` 静态类型检查 |
+| `npm run check:pages` | 编译校验 `pages/functions` 下的 Cloudflare Pages Functions |
+| `npm run types` | 根据 `wrangler.jsonc` 生成 `worker-configuration.d.ts`（自动生成文件，勿手改） |
+| `npm test` | 使用 Vitest 与 `@cloudflare/vitest-plugin` 在本地 `workerd` 运行时中执行全套单元与接口集成测试 |
+| `npm run db:local` | 将 `migrations/` 下的 SQL 迁移应用到本地 D1 数据库 |
+| `npm run db:demo` | 向本地 D1 导入 `tests/fixtures/demo.sql` 虚构演示数据（**仅限本地**） |
+| `npm run db:remote` | 将 `migrations/` 下的 SQL 迁移应用到远程生产 D1 数据库 |
+| `npm run admin:create -- <用户名> [--remote]` | 创建管理员账号并生成 7 天临时密码（默认写本地 D1，加 `--remote` 写远程生产 D1） |
+| `npm run vapid:generate` | 生成 Web Push VAPID 密钥对，公钥打印至终端，私钥写入 `.wrangler/vapid-private.secret`（已存在时不覆盖） |
+| `npm run probe:ai` | 读取 `.dev.vars` 中的测试密钥，实测 LLM 模型列表、JSON 提示词、工具调用往返及 Tavily 搜索耗时 |
+| `npm run deploy` | 本地构建并依次发布 Worker 与 Pages（不自动执行远程 D1 迁移） |
 
-临时绑定会话持续 30 分钟，普通会话持续 1 年并按使用续期。登录限流不适用于日常查看清单。生产 Cookie 使用 Secure、HttpOnly 和 SameSite=Strict，所有写 API 检查同源 Origin。
+---
 
-## 管理员使用日志
+## 部署指南（Cloudflare Pages + Worker + D1）
 
-全局管理员在 APK「设置 → 使用日志」查看所有家庭的操作审计、AI 查询明细、AI 用量、服药和库存记录；网页版不再提供日志页面。支持按操作用户、记录所属家庭、日期、成功或失败筛选，以及分页、刷新。顶部的当前家庭不限制全局日志；普通用户和仅有绑定权限的管理员不能访问日志接口。
+线上正式环境采用 **Cloudflare Pages 前端 + 服务绑定转发至 Cloudflare Worker 后端** 的同源架构（示例域名 `https://your-domain.example.com`）：
 
-`0004_audit_logs.sql` 新增操作审计。上线后开始记录注册、登录及失败验证、退出、验证器和通行密钥绑定、恢复码生成、管理员重置、家庭/成员/药箱管理、药品/库存/服药计划修改、服药与撤销、提醒订阅、AI 配置查看和修改、能力检测、查询及对话，以及日志查看。AI 流式请求以最终处理结果记录成功或失败，即使 HTTP 为 200。未登录的失败请求不会被标成已验证用户，已通过格式校验的登录用户名单独显示为目标账号。
+- **`home-meds` Worker（根目录 `wrangler.jsonc`）**：承载全部 `/api/*` 路由、D1 数据库绑定、加密密钥与每 5 分钟一次的 Cron 提醒触发器。已显式关闭 `workers_dev` 与预览地址，仅允许通过 Pages 服务绑定（Service Binding）和 Cron 调用（规避 `workers.dev` 域名 1101 错误，同时保证 Cookie、同源 `Origin` 校验与 WebAuthn 通行密钥 `RP ID` 唯一绑定在你的 Pages 正式域名下）。
+- **`home-meds` Pages（`pages/` 目录）**：托管 `dist/` 静态资源，并通过 `pages/functions/api/[[path]].ts` 将所有 `/api/*` 请求原样经服务绑定 `API` 转发给 `home-meds` Worker。
 
-审计只保存操作时间、用户及家庭快照、操作类型、HTTP 状态、路由模板、对象编号和目标账号，不保存请求/响应原文、URL 查询参数、Cookie、IP、密码、验证码、分组码、恢复码、密钥、通行密钥断言或聊天原文。原有 AI 查询明细仍包含用户提交的药名/条码，管理员应按家庭隐私要求使用。日常页面轮询不逐条记录，部署前的登录和配置操作无法补录。该日志是应用内只读记录，不是防篡改合规审计；数据库写日志失败时记录 `audit_write_failed`，不把已完成操作返回成失败以诱发重复提交。
+### 日常自动发布（GitHub Actions）
 
-时间显示为设备时区，日期筛选按 UTC。AI 用量单独按家庭本地日期筛选，是配额计数而非成功次数或 Token 费用；药品查询按家庭累计且管理员豁免，对话按个人累计。筛选个人仅显示其对话用量，历史对话的家庭归属按当前成员关系。服药明细显示记录当前状态，新的撤销操作轨迹在操作审计中查看。审计暂不自动删除，可由数据库管理员另行制定保留策略。
+仓库已配置 [`.github/workflows/checks.yml`](.github/workflows/checks.yml)：
+1. **所有分支推送与 Pull Request**：自动在 Node 24 环境下运行 `npm test`、`npm run build`、`npx wrangler deploy --dry-run` 与 `npm run check:pages`。
+2. **`main` 分支推送或手动触发 `workflow_dispatch`**：在检查全部通过后，按顺序串行执行：
+   - `npm run db:remote`（应用远程 D1 迁移）
+   - `npm run deploy:worker`（发布 Worker）
+   - `npm run deploy:pages`（发布 Pages）
+   任何一步失败即中止后续步骤；同一分支构建自动排队防并发冲突。
+3. **平滑滚动兼容要求**：发布过渡期间，旧 Worker 会在新数据库结构上短暂运行，旧前端也会短暂调用新 Worker。因此新增数据库迁移与 API 改动应保持向后兼容（如只新增表或可空列，破坏性清理放到后续版本）。
 
-## 手机端与 API 主要功能
+### 首次启用 GitHub Actions 自动发布
 
-- 扫码解析 GS1、GTIN/EAN、20 位追溯码和追溯网址。原生 Android 2.x 使用本地 ML Kit / ZXing，不依赖网页扫码组件或外部 CDN。
-- 入库先查本群药品和全局缓存，AI 只预填，必须人工核对后创建药品并入库。每盒单独记录剩余数量，追溯码不可重复使用。
-- 普通成员可新建资料，只有管理员可修改已有资料。已有库存或计划的药品不能修改基本单位，避免旧数量被错误解释，需另建正确单位的药品。药箱有记录后不能删除，只能改名。
-- 添加药品的每盒数量和盒数保留输入原文，可全部删空后重输，仅提交时校验正数、精度、范围及整数盒数。
-- 管理员在「药品资料 / 待补充 → 修改药品资料」编辑名称、通用名、厂家、规格、适应症、注意事项、包装数量、确认状态、资料来源和条码映射；在「在库药盒 → 修改药盒资料」编辑具体药盒的有效期截止、批号、序列号、追溯码、每盒装量和开封标记，也可筛选已用完或报废药盒。有效期/批号不属于所有批次共用的药品资料。
-- 修改共用资料不回写历史药盒及服药记录；修改药盒装量不改变剩余库存，且须容纳现有余量及今日仍可撤销的服药量，避免撤销后超量。剩余库存、报废与药箱位置仍走出入库/报废/移库流水，不直接改数。`0005_stock_metadata_version.sql` 使服药、撤销、出库、移库和资料修改都使旧编辑表单失效，防止覆盖并发变化。条码冲突回滚整次编辑，药盒追溯码修改同步维护前缀映射；操作进入管理员审计。
-- 出库、移库、报废、流水、过期及 30 天临期提示。每盒同时显示盒数和剩余基本单位数量。
-- 所有成员可查看、修改本群任何人的吃药计划，记录创建人、修改人和服药操作人。
-- 每天、每周固定日、每隔 N 天和按需计划，按群组时区实时计算今日清单，不提前生成每日记录。超过计划时间 60 分钟标为过时未吃。
-- 计划选药同时展示规格、厂家及库存有效期，可按有效期、批号、存放位置和盒码记住一盒「优先药盒」。有效期属于具体药盒，不合并同名药的不同批次；未填写有效期时明确提示核对实物。手动和 AI 草稿确认共用此选盒界面，模型不猜测优先药盒。`0006_plan_preferred_box.sql` 新增可空偏好，旧计划无需重新设置。
-- 两步确认实际服药时间、用量和药盒；按已开封、到期早的顺序列盒。优先选计划指定的药盒，未指定时沿用仍可用的上次药盒，均允许换盒。优先药盒已用尽或报废时不自动改用另一盒或默认不扣库存，必须重新选择。实际换盒仅更新上次使用记录，不修改计划的优先药盒。
-- 提交前展示本次药盒有效期、批号、位置和余量，须勾选已核对实物药名、规格、有效期、批号及用量；换盒、扫码、返回修改或提交失败后须重新核对。商品码不能区分批次，需手选药盒；追溯码可定位单盒。不扣库存也须核对实物，过期药仍须额外明确确认。新界面提交时附带药盒资料版本，D1 插入时原子校验，资料或库存发生变化则拒绝并重新加载，不误扣另一盒或保存旧确认。
-- D1 batch 内的 SQLite 触发器同时执行校验、扣库存、流水和记住药盒。唯一索引阻止重复勾选，并发时也不会扣成负数。当日撤销通过同一事务恢复库存，仅恢复一次。
-- 按需服药从计划页记录，不发定时提醒。同日已记录的项即使计划暂停仍保留展示。
-- 老人首页清单优先，大字、至少 60px 操作区域、文字加状态符号、两步确认、支持时才显示中文朗读和语音输入。不缓存旧服药清单，离线时明确说明不能记录，避免误导。
+1. 在 Cloudflare 控制台 **Manage Account → Account API Tokens** 创建自定义令牌，最小权限授予：
+   - **Workers Scripts**：Specified Workers → `home-meds`（Editor）
+   - **Cloudflare Pages**：Edit / Write
+   - **D1**：Edit
+2. 在 GitHub 仓库 **Settings → Secrets and variables → Actions** 中添加两个 Repository Secrets：
+   - `CLOUDFLARE_API_TOKEN`：上述 API 令牌
+   - `CLOUDFLARE_ACCOUNT_ID`：Cloudflare 账号 ID（可通过 `npx wrangler whoami` 查看）
 
-## AI 配置
-
-管理员在「设置 → AI 配置」保存 LLM 与 Tavily 密钥。两者用 APP_ENC_KEY 派生的独立 AES-GCM 密钥加密保存，TOTP 使用另一个 HKDF 派生密钥。密钥不回传前端。请使用新的正式 LLM 密钥，轮换曾出现在规划对话中的那一把。
-
-默认：
-
-- 地址 `https://claw.shu.edu.cn/api`
-- 模型 `qwen3.5-27b`
-- 额外参数 `{"enable_thinking":false}`
-- 工具调用，提示词约束输出；可选预检索、json_schema，不提供 json_object
-- 旧配置仍默认外部 Tavily 搜索，需配置 Tavily 密钥；DuckDuckGo 默认关闭
-- 每群每天查询 20 次，管理员查询不限额；每人每天对话 50 轮，可由后台调整
-- 一次查询最多 6 次 LLM 请求（包括唯一一次格式修复）、5 次工具调用；对话每轮最多 5 次工具调用、6 次 LLM 请求
-
-提供商可选择「DeepSeek（官方）」或「其他 LLM」。DeepSeek 固定使用 `https://api.deepseek.com`，不需要填写根地址；输入该提供商的 API 密钥后，页面自动从 `/models` 获取可选模型，不硬编码模型名单。其他 LLM 仍可手填 OpenAI 兼容地址与模型，也可点击获取模型列表。模型获取和内置搜索检测可以使用尚未保存的密钥，不会因此保存密钥；切换提供商或根地址后不会自动复用或发送原有密钥，需输入对应的新密钥。
-
-选择 DeepSeek 时默认选择内置搜索，管理员可手动改回外部搜索。DeepSeek 药品检索使用官方兼容 Anthropic 的 `/anthropic/v1/messages` 服务端 `web_search` 工具，并解析 `web_search_tool_result` / 引用；普通整理和计划对话仍走 Chat Completions。依据：[DeepSeek Anthropic 兼容说明](https://api-docs.deepseek.com/guides/anthropic_api/)、[官方 Web Search 说明](https://api-docs.deepseek.com/quick_start/agent_integrations/claude_code/)。模型、账号是否支持仍需实际检测，模型名称或网页端能联网不能证明 API 支持。
-
-其他 LLM 可以手动选择内置搜索，也可点击「检测内置搜索并自动选择搜索来源」。检测优先使用所选协议，再尝试 Responses `web_search` 或 Chat Completions 联网参数，最多 3 次模型请求；可手选 Anthropic 服务端搜索协议。默认 Chat Completions 传 `enable_search=true`；填写「内置搜索专用参数」JSON 后不再添加这个默认开关，例如支持 `web_search_options` 的接口可填 `{"web_search_options":{}}`。网关必须同时支持原有 Chat Completions 整理与计划对话；只提供 Responses 或 Anthropic 的服务不在当前范围。
-
-检测只有取得接口返回的结构化检索来源才选择内置搜索，接受 Responses/Chat 的引用、`citations` / `search_results`，以及 Anthropic 的搜索结果块；不接受仅在模型正文中声称联网或列出网址。来源经过公开地址检查，但不能证明引用页面支持全部药品事实，仍须人工核对。无法确认能力时选择外部 Tavily；鉴权、限流、网络或服务故障不改变当前选择。检测只更新页面中的草稿，**保存配置后才生效**。检测会产生模型和搜索费用，不发送家庭药箱或计划资料。
-
-启用内置搜索后，药品查询和后台接口检测都不会调用 Tavily / DuckDuckGo，不要求 Tavily 密钥；外部工具调用和预检索方式被忽略，保存时 DuckDuckGo 自动关闭。已有 Tavily 密钥保留加密存储，切回外部模式后可继续使用。正式查询若内置搜索失败或未返回来源，会明确报错，**不会隐式回退到外部 API**。检索和一次格式修复共用原有 LLM 请求预算，返回结果仍须人工确认，不直接写入药品库。内置搜索专用参数只用于公开药品检索，不加入私人计划对话或后续 JSON 整理请求。
-
-`fetch_page` 每次 10 秒，逐跳检查公开 HTTP/HTTPS 地址，不允许私网 IP、凭证网址、本地域名和非标准端口。读取最多 2MB，提取文字后截断到 20KB。仅允许读取本轮搜索结果中的网址。搜索资料和网页均作为不可信数据处理。
-
-对话历史只在前端内存中保存，刷新即清空，每轮发送最近最多 20 条消息。提议工具没有数据库写权限，只发送经 zod 校验的草稿，确认卡片再调用普通 REST API，重新检查权限和基本单位。**AI 可能补充来源没有的内容，程序不能代替人工核对。**
-
-助手通过 `add_plan_draft` 实际加入「待确认的计划」，仅在文字中描述安排不会生成卡片；兼容保留 `propose_plan`，修改/暂停已有正式计划仍用 `propose_plan_update` / `propose_plan_pause`。新工具不要求模型填写用户编号，服务器锁定当前计划对象；没有指定开始日期时用群组当地今天，药名、用量、单位、频率和固定时间仍须明确，信息不足则用 `request_plan_details` 追问，绝不推测用量。
-
-如果助手只回复了文字，点「生成待确认草稿」，可用当前输入或上文再次要求生成真正的卡片。该模式优先要求工具调用，接口不支持 `tool_choice=required` 时在原 6 次请求预算内回退到自动选择；纯文字回复最多纠正一次，不会无限重试。工具返回 `pending_confirmation` 才表示卡片已经加入，仍未保存正式计划。页面显示待确认数量和未生成/校验失败原因，同轮重复调用及重复事件不会重复加入同一张卡片。草稿仅在本页内存中，需打开卡片核对后确认保存；刷新会清空。流读取支持跨网络包分割的 CRLF 和中文字符。
-
-对话助手通过 `find_medicines` 只读检索本群药名、通用名、厂家、规格和资料关键词；无法字面匹配俗称或口语时，用 `list_medicines` 分页读取真实目录，由 LLM 对资料进行语义比对，而不是要求用户输入正式名称。每页最多 20 种，说明文字限长，返回真实编号、规格和在库量；在库量不代表未过期或适合服用。这里不提供向量检索或任意 SQL 执行，也不开放其他群组、账号或密钥表。数据库文字是不可信资料，多个候选或规格不明时必须请用户核对，不得凭症状推荐选药。新草稿只能引用本轮工具读到的药品编号，并强制采用数据库正式药名。
-
-「检测接口能力（使用已保存配置）」不会自动改动配置，也不会保存查询结果；与上述更新设置草稿的内置搜索检测分开。探测脚本：
+### 部署到全新的 Cloudflare 账号
 
 ```powershell
-npm run probe:ai
-```
-
-它从忽略的 `.dev.vars` 读取测试密钥，检查模型列表、提示词 JSON、工具往返和可选 json_schema，记录耗时；有 Tavily 测试密钥时补测搜索。没有配置密钥时明确失败或跳过，不把模拟结果当成真实接口结果。
-
-## Web Push 与安装
-
-推送使用 `@block65/webcrypto-web-push` 的 WebCrypto、RFC 8291 aes128gcm 和 RFC 8292 VAPID，支持 Workers 和 Apple 推送。
-
-```powershell
-npm run vapid:generate
-```
-
-公钥显示在终端，填入 `wrangler.jsonc` 的 `VAPID_PUBLIC_KEY`。私钥只写入忽略目录 `.wrangler/vapid-private.secret`，文件已存在时不会覆盖。将 `VAPID_SUBJECT` 改为你维护的 HTTPS 联系页面或 `mailto:` 联系地址。
-
-每五分钟 Cron 向尚未记录的服药项发送本人提醒，超过 30 分钟时通知已订阅的同群非老人成员。检查前一天的日程，避免 23:50 的家人提醒跨过午夜后漏发。24 小时以上的旧项不发推送。`notification_log` 按计划、日期、时间、类型和设备去重；推送失败可重试；404/410 删除订阅。网络中断导致外部推送服务已接收但未确认时，重试无法保证外部严格 exactly-once，通知 tag 会合并同一项。
-
-共享手机退出登录时同时移除此账号的本机订阅，重新登录后需重新开启提醒，避免向后来使用设备的人显示原用户的提醒。
-
-点击通知只打开确认流程，**通知里不能直接勾掉**。过期通知不会替今天的项勾选。手机先添加到桌面，再从桌面进入「设置 → 开启提醒」。国内安卓可能缺少 Google 推送服务，iPhone 需要 iOS 16.4 以上；首页提醒是主要渠道。
-
-## Android 应用
-
-推荐使用 [`android-v2/`](android-v2/README.md) 原生客户端。下面是保留的 `android/` 1.0 WebView 工程历史说明；新网页版只提供管理员设置，不再为该外壳提供日常用药页面，升级请安装 2.x。
-
-`android/` 是包裹正式网址的原生外壳（WebView），只支持简体中文，适用于 Android 10（API 29）及以上，包名 `com.homemeds.app`。页面与网页版是同一份代码，日常功能一致；应用只在 `https://home-meds.pages.dev` 本站页面的主框架内开放原生桥接，外部链接用系统浏览器打开。
-
-- 管理员可以登录，但家庭管理、AI 配置、使用日志、管理员安全设置、群组切换以及修改药品资料、药盒资料只在网页版提供，接口权限不变。应用内不提供通行密钥；仅有绑定权限的管理员会被提示到网页完成绑定。
-- 「设置 → 日历与提醒」选择同步哪些家人的计划（默认只有自己）。计划写入手机本地日历「家药箱」，只存在本机、不同步到任何账号；每个计划时间一个 15 分钟的重复事件，可选择日历是否响铃。应用通知到点提醒本人；所选家人的计划开启「通知家人」且超过 30 分钟未记录时提醒我，老人账号不接收家人提醒。闹钟预先安排 48 小时，打开应用、计划变化、每 6 小时和开机后重新同步，断网时按上次同步的计划安排。到点先向服务器核对，已记录、计划已修改或暂停则不响；无法联网核对时仍提醒并注明。点通知只打开确认服药流程，**提醒不代表已经服药**。退出登录或换账号会删除本机日历、闹钟和通知。
-- Android 14 起需要在系统中允许「闹钟和提醒」才能准时，部分国产系统还要允许自启动、关闭电池优化，设置页会给出入口。
-- 手机端 AI：查询和对话在手机上运行，直接请求 LLM / Tavily。手机在 Android Keystore 生成 RSA-2048 密钥；`POST /api/app/ai/session` 先检查限额，再用该公钥（RSA-OAEP-SHA1 包装 AES-256-GCM）加密下发 LLM/Tavily 密钥，会话 15 分钟有效。密钥只在原生层解开，网页脚本只看到 `hm-key:` 占位符；原生层只把密钥附加到后台配置的 LLM 根地址或 Tavily 的 HTTPS 请求上，并且不跟随重定向。网页读取同样检查公开地址，拒绝解析到本机或私网的域名，正式版只读 HTTPS 网页。查药品、读计划等数据库工具仍经 `POST /api/app/ai/tool` 在 Worker 执行，沿用网页版的只读工具、计划对象锁定和每轮次数上限；`POST /api/app/ai/finish` 记录查询明细和审计，中途放弃的查询由 Cron 记为失败。`0007_app_ai_sessions.sql` 新增会话表。解开的密钥会短暂留在手机内存中，root 或调试过的手机可以读取，这是手机直连提供商的已知代价。
-- 语音输入调用系统语音识别（需要手机装有支持中文的语音服务），朗读使用系统中文 TTS，扫码使用相机权限。
-
-构建（需要 JDK 17 以上和 Android SDK Platform 37；compileSdk 37，targetSdk 36）：
-
-```powershell
-cd E:\Temp\Projects\home-meds\android
-$env:JAVA_HOME = 'C:\Program Files\Java\jdk-21'
-.\gradlew.bat testDebugUnitTest lintDebug assembleDebug
-```
-
-`android/local.properties` 写入 `sdk.dir=...`，该文件已忽略。APK 位于 `android/app/build/outputs/apk/debug/app-debug.apk`，使用调试签名，只供自己安装；上架或分发前需要另建发布签名，签名文件不要提交。
-
-```powershell
-.\platform-tools\adb.exe install -r android\app\build\outputs\apk\debug\app-debug.apk
-```
-
-本地联调：运行 `npm run dev:worker` 和 `npm run dev`，然后：
-
-```powershell
-.\platform-tools\adb.exe reverse tcp:5173 tcp:5173
-cd android; .\gradlew.bat assembleDebug -PhomeMedsBaseUrl=http://127.0.0.1:5173
-```
-
-只有调试版允许访问 `127.0.0.1` 的明文地址。应用依赖本版的 Worker 和网页（`/api/app/ai/*` 与原生桥接），发布到正式网址之后手机端 AI、日历和隐藏管理功能才会生效；在此之前应用只是打开旧网页。
-## 部署（Pages 前端 + Worker 后端）
-
-正式网址：`https://home-meds.pages.dev`。
-
-- `home-meds` Worker（根目录 `wrangler.jsonc`）：全部 API、D1、密钥和每五分钟的 Cron 提醒。已关闭 workers.dev 和预览网址，只能经服务绑定和 Cron 调用。本地 `npm run dev:worker` 仍由它同时提供页面和 API。
-- `home-meds` Pages 项目（`pages/`）：发布同一份 `dist` 静态文件；`pages/functions/api/[[path]].ts` 把 `/api/*` 请求原样经服务绑定 `API` 转给 Worker。Cookie、同源检查和通行密钥 RP ID 都取自这个请求，因此都绑定 `home-meds.pages.dev`。
-
-不用 workers.dev 的原因：在当前账号上，所有 workers.dev 请求都返回 1101，连只有一行代码的测试 Worker 也一样，Cloudflare 分析中的脚本名为 `__unknown__`；而同一版本的 Cron 和服务绑定调用都正常，pages.dev 也正常。即使以后 workers.dev 恢复，也建议只保留一个正式网址，避免通行密钥和登录状态分裂。
-
-日常发布：推送到 GitHub 的 `main` 分支就是发布到正式环境。`.github/workflows/checks.yml` 先运行测试、构建和打包检查，全部通过后依次执行 D1 远程 migration（`npm run db:remote`）、发布 Worker、发布 Pages；任何一步失败，后面的步骤都不会执行。同一分支的运行会排队，不会同时发布。其他分支和 PR 只检查，不发布。不提交代码而重新发布：在 GitHub 的 Actions 页面选择 Checks and deploy → Run workflow → `main`。
-
-发布期间，旧 Worker 会在新数据库结构上短暂运行，旧页面也会短暂调用新 Worker，因此 migration 和 API 改动都要兼容上一版（例如只新增表和列，删除或重命名放到之后的发布）。
-
-首次启用自动发布（只需一次）：
-
-1. 在 Cloudflare 控制台 Manage Account → Account API Tokens 创建自定义令牌，只授予：Workers 选 Specified Workers → `home-meds`，角色 Editor；Pages Write；D1 Edit。
-2. 在 GitHub 仓库 Settings → Secrets and variables → Actions 新建两个 Repository secret：`CLOUDFLARE_API_TOKEN`（上面的令牌）和 `CLOUDFLARE_ACCOUNT_ID`（账号 ID，`npx wrangler whoami` 可查看）。令牌只放在 GitHub secret 中，不要写进仓库、命令参数或聊天记录。
-
-本地 `npm run deploy`（构建，先发布 Worker，再发布 Pages，不执行 migration）仍可备用，但会被下一次 `main` 的自动发布覆盖，正式改动应先推送到 `main`。
-
-`wrangler.jsonc` 已绑定正式 D1 数据库和 VAPID 公钥。正式 `APP_ENC_KEY` 与 VAPID 私钥已作为 Worker 密钥上传，之后的发布不会改动它们。本地的 `.secrets/production.env` 在忽略目录中，请把内容移入密码管理器后删除本地副本。
-
-部署到新账号时：
-
-```powershell
+# 1. 登录并创建 D1 数据库
 npx wrangler login
 npx wrangler whoami
 npx wrangler d1 create home-meds
 ```
 
-将返回的 `database_id` 填入 `wrangler.jsonc`，确认目标账号，然后：
+将返回的 `database_id` 更新至根目录 `wrangler.jsonc`，并运行 `npm run vapid:generate` 生成 VAPID 密钥对（将公钥填入 `wrangler.jsonc` 的 `VAPID_PUBLIC_KEY`，将 `VAPID_SUBJECT` 改为你维护的联系网址或 `mailto:` 地址）。
+
+准备生产密钥（切勿提交版本库，上传后请移入密码管理器并删除本地明文文件）：
+- `APP_ENC_KEY`：至少 32 字符的高熵随机字符串（**必须永久备份，丢失或替换将导致已保存的 TOTP 与后台 AI 密钥无法解密**）
+- `VAPID_PRIVATE_KEY`：`npm run vapid:generate` 生成的私钥
 
 ```powershell
+# 2. 执行远程迁移、构建并上传密钥与 Worker / Pages
 npm run db:remote
 npm run build
 npx wrangler deploy --secrets-file .secrets/production.env
 cd pages; npx wrangler pages project create home-meds --production-branch main; cd ..
 npm run deploy:pages
+
+# 3. 创建远程首位管理员
 npm run admin:create -- 管理员名字 --remote
 ```
 
-再按上面的首次启用步骤，为新账号创建令牌，并更新 GitHub 中的两个 secret。
+---
 
-`.secrets/production.env` 使用 `.env` 格式，包含 `APP_ENC_KEY`（至少 32 字符的随机值）和 `VAPID_PRIVATE_KEY`（`npm run vapid:generate` 生成的私钥）。也可以改用 `npx wrangler secret put` 从安全输入逐个上传。不要把真实密钥放入命令参数或终端输出。APP_ENC_KEY 必须稳定保存，丢失或直接替换会使已有 TOTP 和后台 API 密钥无法解密；本版不包含加密密钥重加密迁移工具。Pages 项目名若已被占用，网址会带后缀，需要同步修改 `VAPID_SUBJECT`。
+## 测试与质量验证
 
-部署后在 `https://home-meds.pages.dev` 绑定管理员。通行密钥绑定此网址，本地和正式域名不能互用。再在后台填入正式 LLM/Tavily 密钥，检测接口能力，实测 DuckDuckGo。最后在真机安装 PWA、订阅并设置一条人工确认过的测试计划，核对 Cron、本人通知、家人通知、点击确认和库存变化。
-
-Wrangler 的远程 migration、secret 和 deploy 都会修改远程状态。不要把 `db:demo` 或测试用密钥用于生产。
-
-## 检查
+### 1. 服务端与前端单元测试（Vitest + workerd）
 
 ```powershell
 npm run types
@@ -238,24 +243,79 @@ npx wrangler deploy --dry-run
 npm run check:pages
 ```
 
-Workers 测试使用 `@cloudflare/vitest-plugin`，它是计划中 `@cloudflare/vitest-pool-workers` 的官方更名后继。旧包已停止更新，旧 runtime 与本项目兼容日期不一致，因此改用当前后继包，而非降低测试兼容日期。测试在 workerd 内运行真实 D1 和 WebCrypto，外部 AI、搜索和推送服务使用模拟响应。模拟的 fetch（`tests/fetch.ts`）先用 workerd 的 `Request` 构造每个请求，线上 fetch 会拒绝的参数（例如 `redirect: 'error'`）在测试中同样报错。
+- 测试运行于 `@cloudflare/vitest-plugin` 提供的真实 `workerd` 运行时、真实本地 D1 与 WebCrypto 环境中，外部 AI、搜索与推送端点通过 `tests/fetch.ts` 模拟（完整经过 `workerd` 的 `Request` 构造校验，如 `redirect: 'error'`）。
+- `tests/` 目录共 25 个测试文件，覆盖：跨时区/DST 日程计算、GS1/GTIN/追溯码解析、并发扣库存与乐观锁回滚、重复服药拦截、当日撤销幂等、家庭数据隔离、`binding_only` 受限会话、TOTP 防重放、一次性恢复码与通行密钥重生成挑战绑定、管理台通行密钥列举与删除、操作审计脱敏与写入故障隔离、五类全局日志跨家庭筛选与游标分页、AI 能力探测、内置搜索结构化引用校验、格式修复预算、草稿不落库、流式失败审计、Web Push 加密去重、跨午夜家属提醒及 `410 Gone` 失效订阅清理。
 
-测试覆盖时区及 DST 边界、每日/每周/隔日计算、GS1、并发扣库存与回滚、重复勾选、当日撤销、群组隔离、绑定会话、TOTP 重放、一次性凭证、恢复码重新生成（含软件模拟的通行密钥断言和会话绑定挑战）、管理员日志权限、跨家庭筛选与游标分页、审计身份归属和敏感信息排除、审计写入故障隔离、AI 接口能力检测、AI 格式修复、限额、草稿不落库及流式失败审计、LLM 和推送请求不跟随重定向（推送失败后下一轮重试）、推送加密与去重、跨午夜家人提醒和 410 清理。CI 在每次推送和 PR 时运行测试、构建和部署打包检查；只有 `main` 通过检查后才自动发布。
+### 2. Android 客户端测试（JUnit + Robolectric + Compose UI Test）
 
-浏览器测试使用本地演示数据。在 390×844 视口下，老人首页、扫码入口和服药确认弹窗的 axe（WCAG 2.1 AA）检查无违规；剩余 incomplete 项为只含符号的勾选按钮和弹窗遮罩后的元素，已人工核对颜色对比度达到 AA。隐藏的桌面浏览器面板不能进行键盘输入，若面板隐藏，对比度检查也可能显示 incomplete。自动检查不等同于真机和 Lighthouse 验收；相机、WebAuthn 系统弹窗、语音、安装和实际推送需要有权限的真实设备验证。免费版 CPU、Cron 大量加密和实际国内推送可达性也需要上线测量。
+详见 [`android-v2/README.md`](android-v2/README.md)。在 `android-v2/` 下执行：
 
-响应式布局回归：运行 `npm run dev` 后，在浏览器打开 `http://127.0.0.1:5173/tests/fixtures/responsive.html`，在开发者控制台执行 `await runResponsiveChecks()`。该页面仅使用合成数据，拦截 API 请求并禁止写入，不需要本地 Worker 或真实账号。默认检查 320、360、390、600、768、800、820、1024、1440 像素下的登录、普通/老人首页、药箱、计划、对话、设置和用药/入库/编辑弹窗，共 189 个场景；包含长药名、家庭名、批号和下拉选项。返回的 `failures` 应为空，检查页面/弹窗横向溢出、手机单列表单和移动/桌面导航切换。此浏览器回归不包含在 Vitest/CI 中，手机浏览器和 Safari 仍需真机核对；页面不禁止用户缩放。
+```powershell
+.\gradlew.bat testDebugUnitTest lintDebug assembleDebug
+```
 
-## 目录
+### 3. 响应式布局与无障碍回归
+
+- **响应式布局自检页**：启动 `npm run dev` 后，在浏览器打开 `http://127.0.0.1:5173/tests/fixtures/responsive.html`，在开发者工具控制台运行 `await runResponsiveChecks()`。该工具使用合成数据并拦截所有网络请求，自动遍历 `320px` 至 `1440px` 共 9 种视口宽度下的 189 个界面与弹窗场景，检测横向溢出、移动端单列表单与导航切换，返回的 `failures` 应为空数组。
+- **无障碍检查（WCAG 2.1 AA）**：在 `390×844` 视口下通过 axe 检查老人首页、扫码入口与服药确认弹窗，颜色对比度与触控尺寸均满足 AA 标准。
+
+---
+
+## 仓库目录结构
 
 ```text
-src/client/       React 界面与扫码组件
-src/shared/       zod、数据类型、扫码解析、日程计算
-src/worker/       Hono、账号、库存、计划、AI、推送
-migrations/      D1 结构与事务触发器
-scripts/         管理员创建、AI 探测、VAPID
-tests/           workerd 单元和接口测试、本地演示 SQL
-public/          PWA manifest、SW、离线页、自托管图标
-pages/           Pages 前端配置和 /api 转发函数
-android/         Android 外壳：WebView、原生桥接、日历与提醒、手机端 AI 网络
+.
+├── .github/workflows/
+│   └── checks.yml            # CI 检查与 main 分支自动部署流水线（D1 迁移 → Worker → Pages）
+├── android/                  # [历史归档] Android 1.0 WebView 外壳工程（com.homemeds.app）
+├── android-v2/               # [主力客户端] 原生 Android 2.5.0 Jetpack Compose 客户端（com.homemeds.app.v2）
+├── docs/                     # 架构设计与服务端 API 详细文档
+│   ├── architecture.md       # 系统架构、D1 数据模型、安全加密与 AI/提醒工作流说明
+│   └── api.md                # HTTP / SSE API 路由、请求头、参数与响应格式手册
+├── migrations/               # Cloudflare D1 SQLite 迁移脚本（0001 至 0007）
+│   ├── 0001_initial.sql      # 核心表结构、索引与服药扣库存/撤销恢复 SQLite 触发器
+│   ├── 0002_stock_movements.sql # 出库/报废/移库校验与库存状态更新触发器
+│   ├── 0003_code_integrity.sql  # 药品条码映射不可变性约束触发器
+│   ├── 0004_audit_logs.sql   # 管理员操作审计日志表与多维索引
+│   ├── 0005_stock_metadata_version.sql # 药盒资料版本乐观锁与追溯码前缀同步触发器
+│   ├── 0006_plan_preferred_box.sql     # 服药计划优先药盒（preferred_stock_item_id）字段扩展
+│   └── 0007_app_ai_sessions.sql        # 原生客户端 AI 临时会话与工具调用配额表
+├── pages/                    # Cloudflare Pages 部署配置与 /api/* 服务绑定转发函数
+│   ├── functions/api/[[path]].ts
+│   └── wrangler.jsonc
+├── public/                   # PWA Manifest、Service Worker、离线兜底页与自托管图标
+├── scripts/                  # 运维与构建校验脚本
+│   ├── admin-create.mjs      # 创建管理员账号与 7 天临时密码
+│   ├── check-built-css.mjs   # 校验构建产物 CSS 的 WebView 87 兼容性
+│   ├── probe-ai.mjs          # 本地实测 LLM 与 Tavily 接口连通性及耗时
+│   └── vapid.mjs             # 生成 Web Push VAPID 密钥对
+├── src/
+│   ├── client/               # React 19 网页管理台源码（账号安全、家庭设置、AI 配置、扫码组件）
+│   ├── shared/               # 前后端共享模块（Zod Schema、条码/GS1/追溯码解析、跨时区日程计算）
+│   └── worker/               # Cloudflare Worker Hono 后端源码（认证、库存、计划、AI、推送、审计）
+├── tests/                    # Vitest + workerd 集成测试与本地演示数据（fixtures/demo.sql、responsive.html）
+├── .dev.vars.example         # 本地开发环境变量模板
+├── index.html                # 网页管理台入口 HTML
+├── LICENSE                   # MIT 开源许可证
+├── package.json              # 项目依赖、脚本与元数据
+├── tsconfig.json             # TypeScript 编译配置
+├── vite.config.ts            # Vite 构建与本地 /api 代理配置
+└── wrangler.jsonc            # Cloudflare Worker、D1 绑定与每 5 分钟 Cron 配置
 ```
+
+---
+
+## 已知限制与安全边界
+
+1. **普通成员弱认证定位**：普通家庭成员采用「分组码注册 + 用户名直接登录」的无密码方案，旨在降低家庭老人与成员的使用门槛。该设计**仅适用于受信任的家庭内部自建场景**，不适用于开放公共注册、医疗机构或高合规隐私场景。
+2. **医疗与用药安全免责**：AI 检索、多角度照片识药与有效期/批号识别均可能出错或遗漏；系统的药品资料、服药计划草稿与提醒**不能代替执业医师或药师的医嘱，也不能代替服药前对实物药盒、药名、规格、有效期、批号和用量的肉眼核对**。
+3. **提醒不等于已服药**：无论是 Web Push 还是 Android 本地日历/精确闹钟，均可能受设备断网、关机、系统休眠、国产 ROM 后台限制或缺少推送服务影响而延迟或漏发；收到提醒绝不代表已经完成服药。
+4. **主加密密钥（`APP_ENC_KEY`）不可丢失**：服务端使用 `APP_ENC_KEY` 经 HKDF 派生出独立的 AES-GCM 密钥来加密管理员 TOTP 密钥与后台 LLM/Tavily API 密钥。一旦丢失或直接替换 `APP_ENC_KEY`，已有加密数据将无法解密（当前不包含密钥轮换重加密迁移工具）。
+5. **应用内审计非防篡改合规存证**：`audit_logs` 是保存在同一 D1 数据库中的应用层只读审计记录，用于家庭管理员日常排查，不具备独立硬件或外部 WORM 防篡改能力。
+6. **手机端 AI 直连的内存边界**：Android 客户端开启「手机直接连接模型」时，服务端下发的加密凭据会在手机原生层内存中短暂解密以直连提供商 HTTPS 接口。在已 Root 或开启调试注入的设备上存在被读取内存的理论风险；如介意可在「设置 → 助手偏好」中关闭手机直连，改走服务端 SSE。
+
+---
+
+## 许可证
+
+本项目基于 [MIT License](LICENSE) 开源，Copyright (c) 2026 chen。

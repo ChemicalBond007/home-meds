@@ -23,7 +23,7 @@
   "triggers": { "crons": ["*/5 * * * *"] },
   "vars": {
     "VAPID_PUBLIC_KEY": "BLIegy6jlROnqmPFe87zyBD3j5m-v1qvwIseRzbzfiBfkWCJb3GXdUXyGUSFm-JeMwXrgT3FJPrxYZtiE7NdZZQ",
-    "VAPID_SUBJECT": "https://home-meds.pages.dev"
+    "VAPID_SUBJECT": "https://your-domain.example.com"
   },
   "observability": {
     "enabled": true,

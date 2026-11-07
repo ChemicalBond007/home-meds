@@ -121,6 +121,41 @@ describe('permissions and credentials', () => {
     expect((await call('/plans', 'POST', { ...draft, unit: '片', user_id: 'x' })).status).toBe(400);
   });
 });
+describe('group-code-gated member registration', () => {
+  const register = (body: object, headers: Record<string, string> = {}) => call('/auth/register', 'POST', body, 'unused', headers);
+  it('rejects missing, blank, invalid and oversized codes without creating accounts or sessions', async () => {
+    for (const join_code of [undefined, '', ' \t ', 'wrong-code', 'x'.repeat(101)]) {
+      const response = await register({ username: '新成员', ...(join_code === undefined ? {} : { join_code }) });
+      expect(response.status).toBe(400);
+      expect(response.headers.get('Set-Cookie')).toBeNull();
+    }
+    expect(await env.DB.prepare('SELECT COUNT(*) n FROM users').first('n')).toBe(3);
+    expect(await env.DB.prepare('SELECT COUNT(*) n FROM sessions').first('n')).toBe(2);
+  });
+  it('registers into the code’s family, ignores forged role and group selection, and issues a member session', async () => {
+    const response = await register({ username: '新成员', join_code: ' join ', is_elderly: true, role: 'admin', group_id: 'other' }, { 'X-Group-Id': 'other' });
+    expect(response.status).toBe(200);
+    const cookie = response.headers.get('Set-Cookie');
+    expect(cookie).toContain('hm_session=');
+    const row = await env.DB.prepare("SELECT role,group_id,is_elderly FROM users WHERE username='新成员'").first();
+    expect(row).toEqual({ role: 'user', group_id: 'g', is_elderly: 1 });
+    const token = cookie!.match(/hm_session=([^;]+)/)![1];
+    const me = await (await call('/auth/me', 'GET', undefined, token)).json() as { user: { username: string; group_id: string } };
+    expect(me.user).toMatchObject({ username: '新成员', group_id: 'g' });
+  });
+  it('invalidates old codes after rotation and leaves existing members in place', async () => {
+    const rotated = await call('/groups/g/rotate-code', 'POST', {}, 'test-admin');
+    const { join_code } = await rotated.json() as { join_code: string };
+    expect((await register({ username: '旧码成员', join_code: 'join' })).status).toBe(400);
+    expect((await register({ username: '新码成员', join_code })).status).toBe(200);
+    expect(await env.DB.prepare("SELECT group_id FROM users WHERE id='u'").first('group_id')).toBe('g');
+  });
+  it('does not allow a valid code to bypass username uniqueness or same-origin checks', async () => {
+    expect((await register({ username: '家人', join_code: 'join' })).status).toBe(409);
+    expect((await register({ username: '新成员', join_code: 'join' }, { Origin: 'https://evil.test' })).status).toBe(403);
+    expect(await env.DB.prepare('SELECT COUNT(*) n FROM users').first('n')).toBe(3);
+  });
+});
 describe('recovery code regeneration', () => {
   const secret = 'JBSWY3DPEHPK3PXPJBSWY3DPEHPK3PXP';
   const totp = (offset = 0) => totpCode(secret, Math.floor(Date.now() / 30000) + offset);

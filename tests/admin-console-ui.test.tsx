@@ -13,8 +13,8 @@ const data: AdminBootstrap = { api_version: 1, user: { id: 'a', username: '管�
   ai: { settings: aiSettingsSchema.parse({}), has_llm_key: true, has_tavily_key: false } };
 
 describe('settings-only administrator interface', () => {
-  it('offers exactly three settings sections without operational tabs or a log page', () => {
-    expect(adminSections.map(s => s.id)).toEqual(['account', 'family', 'ai']);
+  it('offers settings sections including downloads without operational tabs or a log page', () => {
+    expect(adminSections.map(s => s.id)).toEqual(['account', 'family', 'ai', 'download']);
     const html = renderToStaticMarkup(<AdminWorkspace data={data} busy={false} error="" logout={async () => {}}
       select={() => {}} changed={() => {}} setBusy={() => {}} />);
     expect(html).toContain('管理员设置');

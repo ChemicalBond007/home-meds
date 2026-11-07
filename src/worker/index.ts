@@ -12,6 +12,7 @@ import { push, runReminders } from './push';
 import { audit } from './audit';
 import { logs } from './logs';
 import { bootstrap, mutationSnapshot } from './bootstrap';
+import { download } from './download';
 import type { AppEnv, Bindings } from './core';
 
 export const app = new Hono<AppEnv>();
@@ -25,6 +26,7 @@ app.use('/api/*', bodyLimit({ maxSize: 256 * 1024 }));
 app.route('/api', auth);
 app.use('/api/*', mutationSnapshot);
 app.route('/api', bootstrap);
+app.route('/api', download);
 app.get('/api/health', c => c.json({ ok: true }));
 app.route('/api', management);
 app.route('/api', inventory);
