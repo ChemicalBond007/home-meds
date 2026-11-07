@@ -1,7 +1,15 @@
 import { decrypt, encrypt } from './crypto';
 import type { Bindings } from './core';
 import { aiSettingsSchema, connectionId, type AISettings } from '../shared/ai';
+import type { AISettingsState } from '../shared/bootstrap';
 export { aiSettingsSchema, type AISettings } from '../shared/ai';
+export async function settingsState(env: Bindings): Promise<AISettingsState> {
+  const rows = (await env.DB.prepare(`SELECT key,CASE WHEN key='ai' THEN value ELSE NULL END AS value
+    FROM app_settings WHERE key IN ('ai','key:llm','key:tavily')`).all<{ key: string; value: string | null }>()).results;
+  const config = rows.find(r => r.key === 'ai')?.value;
+  return { settings: aiSettingsSchema.parse(config ? JSON.parse(config) : {}),
+    has_llm_key: rows.some(r => r.key === 'key:llm'), has_tavily_key: rows.some(r => r.key === 'key:tavily') };
+}
 export async function getSettings(env: Bindings) {
   const r = await env.DB.prepare("SELECT value FROM app_settings WHERE key='ai'").first<{ value: string }>();
   return aiSettingsSchema.parse(r ? JSON.parse(r.value) : {});

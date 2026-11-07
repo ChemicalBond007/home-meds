@@ -55,11 +55,24 @@ fun parseProposal(o: JSONObject, target: String): Proposal {
     return Proposal(o.nullable("draft_id") ?: UUID.randomUUID().toString(), op, planId, draft)
 }
 
-@Composable fun ChatScreen(vm: AppViewModel, state: AppState) {
+@Composable fun ChatScreen(vm: AppViewModel, state: AppState, clearRequested: Boolean = false, clearHandled: () -> Unit = {}) {
     val target = assistantTarget(state)
     key(state.user?.id, state.groupId, target, state.assistantPhone) {
-        ChatConversation(vm, state, target)
+        ClearableChat(clearRequested, clearHandled) { ChatConversation(vm, state, target) }
     }
+}
+
+@Composable internal fun ClearableChat(clearRequested: Boolean, clearHandled: () -> Unit, conversation: @Composable () -> Unit) {
+    var generation by remember { mutableIntStateOf(0) }
+    // Replacing the whole session also cancels its stream and drops image/history context.
+    key(generation) { conversation() }
+    if (clearRequested) AlertDialog(
+        onDismissRequest = clearHandled,
+        title = { Text("清空对话历史") },
+        text = { Text("将停止正在进行的回复，清空当前对话、推荐回复、输入内容、图片附件及未保存草稿。已保存的药品、库存和计划不受影响。此操作无法撤销。") },
+        dismissButton = { TextButton(clearHandled) { Text("取消") } },
+        confirmButton = { TextButton({ generation++; clearHandled() }) { Text("确认清空") } },
+    )
 }
 
 @Composable private fun ChatConversation(vm: AppViewModel, state: AppState, target: String?) {

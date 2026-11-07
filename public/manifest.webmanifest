@@ -1,7 +1,7 @@
 {
   "id": "/",
-  "name": "家药箱 · 家人一起照顾",
-  "short_name": "家药箱",
+  "name": "赛博药箱管理员设置中心",
+  "short_name": "药箱管理台",
   "lang": "zh-CN",
   "start_url": "/",
   "scope": "/",

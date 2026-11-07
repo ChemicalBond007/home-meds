@@ -93,7 +93,7 @@ import org.json.JSONObject
     if (scan) ScannerDialog({ scan = false }) { raw ->
         scan = false; verified = false
         vm.perform {
-            val resolved = vm.get("/codes/resolve?code=" + URLEncoder.encode(raw, "UTF-8"))
+            val resolved = resolveMedicineCode(vm.get("/codes/resolve?code=" + URLEncoder.encode(raw, "UTF-8")), raw, state.products, state.stock)
             val parsed = parseCode(raw)
             val exactBox = resolved.optJSONObject("box")?.nullable("id")
             val product = resolved.optJSONObject("product")?.nullable("id")

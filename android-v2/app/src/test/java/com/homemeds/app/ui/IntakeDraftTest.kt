@@ -6,6 +6,19 @@ import org.junit.Assert.*
 import org.junit.Test
 
 class IntakeDraftTest {
+    @Test fun monthOnlyPhotoExpiryRemainsMonthOnlyUntilConfirmedSave() {
+        val seed = prepareIntakeDraft(json("name" to "测试药", "expiry_date" to "2028-02"), listOf(product("a")))
+        assertEquals("2028-02", seed.expiry)
+        assertEquals("2028-02-29", medicineExpiry(seed.expiry)!!.date.toString())
+    }
+
+    @Test fun existingTraceMatchesItsActualProductEvenWhenPhotoNameDiffers() {
+        val stock = StockItem(json("id" to "box", "product_id" to "a", "trace_code" to "12345678901234567890"))
+        val seed = prepareIntakeDraft(json("name" to "识别不完整的名称", "code" to "12345678901234567890"),
+            listOf(product("a")), listOf(stock))
+        assertEquals("a", seed.product!!.id)
+    }
+
     private fun product(id: String, spec: String = "10mg", manufacturer: String = "厂家甲") = Product(json(
         "id" to id, "name" to "测试药", "specification" to spec, "manufacturer" to manufacturer,
         "base_unit" to "片", "units_per_package" to 24))

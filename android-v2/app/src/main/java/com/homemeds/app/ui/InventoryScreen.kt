@@ -76,14 +76,20 @@ import java.net.URLEncoder
         vm.save("PUT", "/products/${p.id}", body) { product = null }
     } }
     box?.let { item ->
+        var photoBusy by remember(item.id) { mutableStateOf(false) }
         val initial = json("expiry_date" to item.expiry, "batch_number" to item.data.nullable("batch_number"),
             "serial_number" to item.data.nullable("serial_number"), "trace_code" to item.trace,
             "units_per_package" to item.data.getDouble("units_per_package"), "opened" to (item.data.optInt("opened") == 1),
             "expected_version" to item.version)
-        EditForm("编辑药盒资料（保存时检查版本）", listOf(FormField("expiry_date", "有效期 YYYY-MM-DD", "nullable"),
+        EditForm("编辑药盒资料（保存时检查版本）", listOf(FormField("expiry_date", "有效期", "expiry"),
             FormField("batch_number", "批号", "nullable"), FormField("serial_number", "序列号", "nullable"),
             FormField("trace_code", "20 位追溯码", "nullable"), FormField("units_per_package", "每盒数量", "number"),
-            FormField("opened", "已经开封", "bool")), initial, state.busy, { box = null }) { body ->
+            FormField("opened", "已经开封", "bool")), initial, state.busy || photoBusy, { box = null }, extra = { values ->
+            PackagePhotoControl(state.groupId, !state.busy, { photoBusy = it }) { details ->
+                details.nullable("expiry_date")?.let { values["expiry_date"] = it }
+                details.nullable("batch_number")?.let { values["batch_number"] = it }
+            }
+        }) { body ->
             vm.perform {
                 try { vm.mutate("PUT", "/stock/${item.id}", body); box = null }
                 catch (e: com.homemeds.app.net.ApiException) {
@@ -166,9 +172,10 @@ internal fun matchMedicineDraft(draft: JSONObject, products: List<Product>): Pro
 }
 
 internal data class IntakeDraftSeed(val product: Product?, val code: String, val expiry: String, val batch: String, val size: String)
-internal fun prepareIntakeDraft(draft: JSONObject, products: List<Product>): IntakeDraftSeed {
-    val product = matchMedicineDraft(draft, products)
+internal fun prepareIntakeDraft(draft: JSONObject, products: List<Product>, stock: List<StockItem> = emptyList()): IntakeDraftSeed {
     val code = draft.nullable("code").orEmpty()
+    val box = knownTraceBox(code, stock)
+    val product = if (box != null) products.firstOrNull { it.id == box.productId } else matchMedicineDraft(draft, products)
     val parsed = parseCode(code)
     return IntakeDraftSeed(product, code, draft.nullable("expiry_date") ?: parsed.expiryDate.orEmpty(),
         draft.nullable("batch_number") ?: parsed.batchNumber.orEmpty(),
@@ -197,12 +204,19 @@ internal fun prepareIntakeDraft(draft: JSONObject, products: List<Product>): Int
     var photos by remember { mutableStateOf<List<PhotoAttachment>>(emptyList()) }
     var recognized by remember { mutableStateOf<JSONObject?>(null) }
     var advanceAfterCreate by remember { mutableStateOf(false) }
+    var duplicateCode by remember { mutableStateOf<String?>(null) }
+    val duplicate = knownTraceBox(code, state.stock) != null || (duplicateCode != null && duplicateCode == code.trim())
     val scope = rememberCoroutineScope()
     fun applyDraft(draft: JSONObject) {
         recognized = JSONObject(draft.toString()).put("status", "pending")
-        val seed = prepareIntakeDraft(draft, state.products)
+        val seed = prepareIntakeDraft(draft, state.products, state.stock)
         code = seed.code; expiry = seed.expiry; batch = seed.batch; size = seed.size
         checked = false
+        if (knownTraceBox(code, state.stock) != null) {
+            product = seed.product?.id.orEmpty(); newProduct = null; advanceAfterCreate = false
+            error = "已识别此追溯码对应的已入库药盒，不能重复添加"
+            return
+        }
         if (seed.product != null) {
             product = seed.product.id
             advanceAfterCreate = false
@@ -226,11 +240,14 @@ internal fun prepareIntakeDraft(draft: JSONObject, products: List<Product>): Int
         }
     }
     suspend fun resolve(raw: String) {
-        val data = vm.get("/codes/resolve?code=" + URLEncoder.encode(raw, "UTF-8"))
+        val data = resolveMedicineCode(vm.get("/codes/resolve?code=" + URLEncoder.encode(raw, "UTF-8")), raw, state.products, state.stock)
         val parsed = parseCode(raw)
         expiry = parsed.expiryDate.orEmpty(); batch = parsed.batchNumber.orEmpty()
-        if (data.optJSONObject("box") != null) { error = "该追溯码药盒已入库，不能重复添加"; product = ""; return }
-        data.optJSONObject("product")?.let { product = it.getString("id"); size = it.get("units_per_package").toString() }
+        val match = data.optJSONObject("product")
+        product = match?.getString("id").orEmpty(); size = match?.get("units_per_package")?.toString().orEmpty()
+        newProduct = null; advanceAfterCreate = false; checked = false; error = null
+        duplicateCode = if (data.optJSONObject("box") != null) raw.trim() else null
+        if (duplicateCode != null) { error = "已识别此追溯码对应的已入库药盒，不能重复添加"; return }
         data.optJSONObject("cache")?.let { newProduct = it }
     }
     LaunchedEffect(Unit) {
@@ -260,30 +277,37 @@ internal fun prepareIntakeDraft(draft: JSONObject, products: List<Product>): Int
             }
             if (looking) Action("取消查询", secondary = true) { lookup?.cancel() }
             if (progress.isNotBlank()) Text(progress)
-            Action("下一步：核对药盒", enabled = product.isNotBlank() && !looking && !state.busy) { step = 2; error = null }
+            if (duplicate) Text("该追溯码对应已入库药盒，可以查询，但不能重复入库。", color = Muted)
+            Action("下一步：核对药盒", enabled = product.isNotBlank() && !duplicate && !looking && !state.busy) { step = 2; error = null }
         } else {
             Text(state.products.find { it.id == product }?.name ?: "新建药品")
             Picker("存放药箱", warehouse, state.warehouses.map { it.getString("id") to it.getString("name") }, { warehouse = it; checked = false })
-            Field("有效期 YYYY-MM-DD（可空）", expiry, { expiry = it; checked = false })
-            Field("批号（可空）", batch, { batch = it; checked = false })
+            PackagePhotoControl(state.groupId, !looking && !state.busy, { looking = it }) { details ->
+                details.nullable("expiry_date")?.let { expiry = it }
+                details.nullable("batch_number")?.let { batch = it }
+                checked = false
+            }
+            ExpiryField(expiry, { expiry = it; checked = false }, enabled = !looking && !state.busy)
+            Field("批号（可空）", batch, { batch = it; checked = false }, enabled = !looking && !state.busy)
             Field("每盒数量", size, { size = it; checked = false }, number = true)
             Field("盒数（追溯码只能一盒）", packages, { packages = it; checked = false }, number = true)
-            Check("已核对实物药名、规格、数量、有效期和存放药箱", checked, { checked = it })
-            Action("确认入库", enabled = checked && !state.busy) {
+            Check("已核对实物药名、规格、数量、有效期和存放药箱", checked, { checked = it }, enabled = !looking && !state.busy)
+            Action("确认入库", enabled = checked && !duplicate && !looking && !state.busy) {
                 try {
+                    require(!duplicate) { "该追溯码药盒已入库，不能重复添加" }
                     require(warehouse.isNotBlank()) { "请选择药箱" }
                     val n = size.toDoubleOrNull()
                     require(n != null && n.isFinite() && n > 0) { "请填写有效的每盒数量" }
                     val count = packages.toIntOrNull()
                     require(count != null && count in 1..100) { "盒数应为 1–100" }
                     require(parseCode(code).traceCode == null || count == 1) { "一个追溯码只能入库一盒" }
-                    if (expiry.isNotBlank()) java.time.LocalDate.parse(expiry)
+                    val expiryDate = medicineExpiry(expiry)?.date?.toString()
                     vm.save("POST", "/stock", json("product_id" to product, "warehouse_id" to warehouse, "code" to code,
-                        "expiry_date" to expiry.ifBlank { null }, "batch_number" to batch.ifBlank { null },
+                        "expiry_date" to expiryDate, "batch_number" to batch.ifBlank { null },
                         "units_per_package" to n, "packages" to count)) { onSaved(); dismiss() }
                 } catch (e: Exception) { error = e.message ?: "请核对填写内容" }
             }
-            Action("上一步", secondary = true, enabled = !state.busy) { step = 1 }
+            Action("上一步", secondary = true, enabled = !looking && !state.busy) { step = 1 }
         }
         error?.let { Text(it, color = Red) }
     }

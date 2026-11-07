@@ -9,6 +9,15 @@ data class ParsedCode(
     val traceCode: String? = null, val expiryDate: String? = null, val batchNumber: String? = null, val serialNumber: String? = null,
 )
 
+internal fun preferredMedicineCode(rawCodes: List<String>): String? {
+    val codes = rawCodes.map(String::trim).filter(String::isNotEmpty).distinct()
+    val traces = codes.filter { parseCode(it).traceCode != null }
+    if (traces.map { parseCode(it).traceCode }.distinct().size > 1) return null
+    return traces.firstOrNull() ?: codes.maxByOrNull {
+        when (parseCode(it).kind) { "gs1" -> 2; "gtin" -> 1; else -> 0 }
+    }
+}
+
 fun validGtin(s: String): Boolean {
     if (!Regex("^(\\d{8}|\\d{12,14})$").matches(s)) return false
     val sum = s.dropLast(1).reversed().mapIndexed { i, c -> c.digitToInt() * if (i % 2 == 0) 3 else 1 }.sum()

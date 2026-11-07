@@ -2,16 +2,20 @@ import { useEffect, useId, useRef, useState, type ReactNode } from 'react';
 import { api } from './api';
 import { isApp, nativeCall } from './native';
 export const errorText = (e: unknown) => e instanceof Error ? e.message : '操作失败，请重试';
-export function useLoad<T>(path: string, version: string | number = '') {
-  const [data, setData] = useState<T>(), [error, setError] = useState(''), [loading, setLoading] = useState(true);
+export function useLoad<T>(path: string, version: string | number = '', initial?: T) {
+  const [data, setData] = useState<T | undefined>(initial), [error, setError] = useState(''), [loading, setLoading] = useState(initial === undefined);
+  const firstVersion = useRef(version);
   const [reloadCount, setReloadCount] = useState(0);
   useEffect(() => {
     let active = true;
+    if (initial !== undefined && version === firstVersion.current && reloadCount === 0) {
+      setData(initial); setLoading(false); setError(''); return;
+    }
     setLoading(true); setError(''); setData(undefined);
     api<T>(path).then(d => { if (active) setData(d); }).catch(e => { if (active) setError(errorText(e)); })
       .finally(() => { if (active) setLoading(false); });
     return () => { active = false; };
-  }, [path, version, reloadCount]);
+  }, [path, version, reloadCount, initial]);
   return { data, error, loading, reload: () => setReloadCount(n => n + 1) };
 }
 export function Message({ children, warning = false }: { children: ReactNode; warning?: boolean }) {

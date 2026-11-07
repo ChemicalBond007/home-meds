@@ -10,6 +10,7 @@ import { type AppEnv, type Ctx, fail, json, limit, admin } from './core';
 import { hash, randomToken, encrypt, decrypt, base32, b64, unb64, checkTotp } from './crypto';
 import { consumeSecret, issueSecrets } from './one-time';
 import type { User } from '../shared/types';
+import { adminPasskeys } from './passkeys';
 
 const username = z.string().trim().min(2).max(40).regex(/^[\p{L}\p{N}_-]+$/u, '仅支持文字、数字、下划线和短横线');
 const credentials = z.object({ username, secret: z.string().max(300).optional(), code: z.string().max(10).optional() });
@@ -60,7 +61,9 @@ async function checkPasskey(c: Ctx, userId: string, challenge: string, response:
     credential: { id: cred.id, publicKey: unb64(cred.public_key), counter: cred.counter },
   }).catch(() => null);
   if (!result?.verified) fail(401, '通行密钥无效');
-  return c.env.DB.prepare('UPDATE webauthn_credentials SET counter=? WHERE id=?').bind(result.authenticationInfo.newCounter, cred.id);
+  const updated = await c.env.DB.prepare('UPDATE webauthn_credentials SET counter=? WHERE id=? AND user_id=?')
+    .bind(result.authenticationInfo.newCounter, cred.id, userId).run();
+  if (!updated.meta.changes) fail(401, '通行密钥已被删除');
 }
 auth.use('*', async (c, next) => {
   if (!['GET', 'HEAD', 'OPTIONS'].includes(c.req.method)) {
@@ -82,10 +85,11 @@ auth.use('*', async (c, next) => {
     }
   }
   const path = c.req.path.replace('/api', '');
-  const publicPaths = ['/auth/register', '/auth/login', '/auth/passkey/options', '/auth/passkey/login', '/health'];
+  const publicPaths = ['/auth/register', '/auth/login', '/auth/admin/login', '/auth/passkey/options', '/auth/passkey/login', '/health'];
   if (!publicPaths.includes(path) && !c.get('user')) fail(401, '请先登录');
   if (c.get('session')?.binding_only && ![
     '/auth/me', '/auth/logout', '/auth/totp/setup', '/auth/totp/bind', '/auth/passkey/register/options', '/auth/passkey/register',
+    '/app/bootstrap', '/admin/bootstrap',
   ].includes(path)) fail(403, '请先绑定验证器或通行密钥');
   await next();
 });
@@ -102,13 +106,14 @@ auth.post('/auth/register', async c => {
   await session(c, id);
   return c.json({ ok: true });
 });
-auth.post('/auth/login', async c => {
+for (const loginPath of ['/auth/login', '/auth/admin/login']) auth.post(loginPath, async c => {
   const data = await json(c, credentials);
   c.set('auditSubject', data.username);
   await limit(c.env.DB, `login:${c.req.header('CF-Connecting-IP') || 'local'}`, 30, 600);
   await limit(c.env.DB, `login-user:${data.username.toLowerCase()}`, 15, 600);
   const u = await c.env.DB.prepare('SELECT * FROM users WHERE username=?').bind(data.username).first<User>();
   if (!u) fail(401, '账号或凭证错误');
+  if (loginPath === '/auth/admin/login' && u.role !== 'admin') fail(403, '网页版仅供管理员访问，请使用手机应用');
   if (u.role === 'user') {
     await session(c, u.id);
     return c.json({ ok: true });
@@ -221,7 +226,7 @@ auth.post('/auth/passkey/login', async c => {
   const ch = await c.env.DB.prepare(`DELETE FROM auth_challenges WHERE id=? AND kind='authenticate' AND session_hash IS NULL
     AND expires_at>? RETURNING user_id,challenge`).bind(id, Date.now()).first<{ user_id: string; challenge: string }>();
   if (!ch) fail(401, '验证已过期');
-  await (await checkPasskey(c, ch.user_id, ch.challenge, response)).run();
+  await checkPasskey(c, ch.user_id, ch.challenge, response);
   await session(c, ch.user_id);
   return c.json({ ok: true });
 });
@@ -246,7 +251,6 @@ auth.post('/auth/recovery/regenerate', async c => {
   const u = c.get('user');
   const proof = await json(c, z.union([z.object({ code: z.string().regex(/^\d{6}$/) }), assertion]));
   await limit(c.env.DB, `reauth:${u.id}`, 10, 600);
-  const statements: D1PreparedStatement[] = [];
   if ('code' in proof) {
     const t = await verifiedTotp(c, u.id);
     if (!t) fail(400, '尚未绑定验证器，请使用通行密钥');
@@ -256,11 +260,10 @@ auth.post('/auth/recovery/regenerate', async c => {
       AND kind='authenticate' AND expires_at>? RETURNING challenge`)
       .bind(proof.id, u.id, c.get('session').token_hash, Date.now()).first<{ challenge: string }>();
     if (!ch) fail(401, '验证已过期，请重试');
-    statements.push(await checkPasskey(c, u.id, ch.challenge, proof.response));
+    await checkPasskey(c, u.id, ch.challenge, proof.response);
   }
   const codes = await issueSecrets(c.env.DB, u.id, 'recovery');
   await c.env.DB.batch([
-    ...statements,
     c.env.DB.prepare("DELETE FROM one_time_secrets WHERE user_id=? AND kind='recovery'").bind(u.id),
     ...codes.statements,
   ]);
@@ -278,4 +281,24 @@ auth.post('/admin/users/:id/reset', async c => {
     ...issued.statements,
   ]);
   return c.json({ temporary_password: issued.values[0], valid_days: 7 });
+});
+
+auth.get('/admin/passkeys', async c => c.json(await adminPasskeys(c)));
+auth.delete('/admin/users/:id/passkeys', async c => {
+  admin(c);
+  const id = c.req.param('id');
+  const target = await c.env.DB.prepare("SELECT username FROM users WHERE id=? AND role='admin'")
+    .bind(id).first<{ username: string }>();
+  if (!target) fail(404, '管理员不存在');
+  c.set('auditSubject', target.username);
+  const { credential_id } = await json(c, z.object({ credential_id: z.string().min(1).max(2048).regex(/^[A-Za-z0-9_-]+$/) }));
+  const result = await c.env.DB.batch([
+    c.env.DB.prepare(`DELETE FROM webauthn_credentials WHERE id=? AND user_id=?
+      AND EXISTS(SELECT 1 FROM users WHERE id=? AND role='admin') RETURNING id`).bind(credential_id, id, id),
+    // Invalidate outstanding login and step-up challenges only when a key was deleted.
+    c.env.DB.prepare("DELETE FROM auth_challenges WHERE user_id=? AND kind='authenticate' AND changes()>0").bind(id),
+  ]);
+  if (!result[0].results.length) fail(404, '通行密钥不存在或已删除，请刷新列表');
+  try { return c.json({ ok: true, passkey_admins: await adminPasskeys(c) }); }
+  catch { return c.json({ ok: true, state_error: '通行密钥已删除，但列表刷新失败，请刷新列表，不要重复删除' }); }
 });

@@ -12,6 +12,93 @@ import java.io.StringReader
 import java.util.concurrent.TimeUnit
 
 class ApiClientTest {
+    @Test fun datePhotoCancellationClosesSessionWithoutEmittingResults() = runBlocking {
+        val waiting = CompletableDeferred<Unit>()
+        val backend = object : AgentBackend() {
+            override suspend fun complete(s: AiAgent.Opened, messages: JSONArray, tools: JSONArray?, required: Boolean,
+                schema: JSONObject?, emit: (suspend (String, Any) -> Unit)?): JSONObject {
+                waiting.complete(Unit)
+                awaitCancellation()
+            }
+        }
+        val events = mutableListOf<String>()
+        val job = launch { AiAgent.runPackageDetails(listOf(image), "g1", backend) { event, _ -> events += event } }
+        waiting.await(); job.cancelAndJoin()
+        assertTrue(events.isEmpty())
+        assertEquals(listOf("chat" to false), backend.closed)
+    }
+
+    @Test fun datePhotoRespectsConfiguredPromptAndStructuredOutputModes() = runBlocking {
+        for (mode in listOf("prompt", "json_schema")) {
+            var requested: JSONObject? = null
+            val backend = object : AgentBackend(reply(json("expiry_date" to null, "batch_number" to null).toString())) {
+                override suspend fun complete(s: AiAgent.Opened, messages: JSONArray, tools: JSONArray?, required: Boolean,
+                    schema: JSONObject?, emit: (suspend (String, Any) -> Unit)?): JSONObject {
+                    requested = schema
+                    return super.complete(s, messages, tools, required, schema, emit)
+                }
+            }
+            backend.settings.put("output_mode", mode)
+            AiAgent.runPackageDetails(listOf(image), "g1", backend) { _, _ -> }
+            if (mode == "prompt") assertNull(requested)
+            else assertEquals(listOf("expiry_date", "batch_number"), requested!!.getJSONArray("required").strings())
+        }
+    }
+
+    @Test fun medicinePhotoAndConversationAcceptMonthOnlyExpiryWithoutInventingDay() = runBlocking {
+        val med = medicine().put("expiry_date", "2028.06")
+        val lookup = AgentBackend(reply(med.toString()))
+        var found: JSONObject? = null
+        AiAgent.runLookup("药盒", "g1", true, image, lookup) { event, data -> if (event == "result") found = data as JSONObject }
+        assertEquals("2028-06", found!!.getString("expiry_date"))
+        val chat = AgentBackend(calls("add_medicine_draft" to med), reply("请核对"))
+        AiAgent.runChat(chatBody(), "g1", true, chat) { event, data ->
+            if (event == "medicine_draft") assertEquals("2028-06", (data as JSONObject).getString("expiry_date"))
+        }
+    }
+
+    @Test fun dateCloseupsNeedNoDrugNameSearchOrRemoteToolsAndPreserveSixPhotos() = runBlocking {
+        val backend = AgentBackend(reply(json("expiry_date" to "2028年2月", "batch_number" to "LOT-8").toString()))
+        val photos = List(6) { "$image-$it" }
+        var details: JSONObject? = null
+        AiAgent.runPackageDetails(photos, "g1", backend) { event, data -> if (event == "result") details = data as JSONObject }
+        assertEquals("2028-02", details!!.getString("expiry_date"))
+        assertEquals("LOT-8", details!!.getString("batch_number"))
+        assertFalse(details!!.has("name"))
+        assertEquals(7, backend.requests.single().getJSONObject(1).getJSONArray("content").length())
+        assertTrue(backend.requests.single().getJSONObject(0).getString("content").contains("不得把生产日期当有效期"))
+        assertEquals(listOf("chat"), backend.opened)
+        assertTrue(backend.remoteCalls.isEmpty())
+        assertTrue(backend.searchSessions.isEmpty())
+        assertNull(backend.advertised.single())
+        assertEquals(listOf("chat" to true), backend.closed)
+    }
+
+    @Test fun unreadableDateStaysNullAndMalformedDateGetsOnlyOneRepair() = runBlocking {
+        val backend = AgentBackend(reply(json("expiry_date" to "2028-02-31", "batch_number" to null).toString()),
+            reply(json("expiry_date" to null, "batch_number" to "ONLY-LOT").toString()))
+        var result: JSONObject? = null
+        AiAgent.runPackageDetails(listOf(image), "g1", backend) { event, data -> if (event == "result") result = data as JSONObject }
+        assertTrue(result!!.isNull("expiry_date"))
+        assertEquals("ONLY-LOT", result!!.getString("batch_number"))
+        assertEquals(2, backend.requests.size)
+        assertEquals(listOf("chat" to true), backend.closed)
+    }
+
+    @Test fun packagePhotoValidationRejectsInvalidBatchAndClosesSessionOnFailure() = runBlocking {
+        val invalid = reply(json("expiry_date" to "2028-13", "batch_number" to null).toString())
+        val backend = AgentBackend(invalid, invalid)
+        try { AiAgent.runPackageDetails(listOf(image), "g1", backend) { _, _ -> }; fail("must reject invalid date") }
+        catch (_: UserError) { }
+        assertEquals(listOf("chat" to false), backend.closed)
+        for (images in listOf(emptyList(), List(7) { image })) {
+            val unopened = AgentBackend()
+            try { AiAgent.runPackageDetails(images, "g1", unopened) { _, _ -> }; fail("must reject photo batch") }
+            catch (_: UserError) { }
+            assertTrue(unopened.opened.isEmpty())
+        }
+    }
+
     @Test fun ordinaryChatProactivelyEmitsBothDraftsAndModelRepliesWithoutSaving() = runBlocking {
         val backend = AgentBackend(calls("add_medicine_draft" to medicine(), "add_plan_draft" to json("medicine_name" to "测试药")),
             reply("请核对卡片。<suggested_replies>[\"我先核对药盒\",\"我补充已有医嘱\"]</suggested_replies>"))

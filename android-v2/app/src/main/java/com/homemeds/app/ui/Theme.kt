@@ -152,18 +152,20 @@ internal fun appTypography(elderly: Boolean): Typography {
 data class FormField(val key: String, val label: String, val type: String = "text", val options: List<Pair<String, String>> = emptyList())
 
 @Composable fun EditForm(title: String, fields: List<FormField>, initial: org.json.JSONObject, busy: Boolean,
-    dismiss: () -> Unit, save: (org.json.JSONObject) -> Unit) {
+    dismiss: () -> Unit, extra: @Composable (MutableMap<String, String>) -> Unit = {}, save: (org.json.JSONObject) -> Unit) {
     val values = remember { mutableStateMapOf<String, String>().apply {
         fields.forEach { put(it.key, if (initial.isNull(it.key)) "" else initial.opt(it.key)?.toString().orEmpty()) }
     } }
     var error by remember { mutableStateOf<String?>(null) }
     Modal(title, dismiss) {
+        extra(values)
         fields.forEach { f ->
             when (f.type) {
-                "bool" -> Check(f.label, values[f.key] in setOf("true", "1"), { values[f.key] = it.toString() })
-                "choice" -> Picker(f.label, values[f.key], f.options, { values[f.key] = it })
+                "expiry" -> ExpiryField(values[f.key].orEmpty(), { values[f.key] = it }, enabled = !busy)
+                "bool" -> Check(f.label, values[f.key] in setOf("true", "1"), { values[f.key] = it.toString() }, enabled = !busy)
+                "choice" -> Picker(f.label, values[f.key], f.options, { values[f.key] = it }, enabled = !busy)
                 else -> Field(f.label, values[f.key].orEmpty(), { values[f.key] = it }, number = f.type in setOf("number", "int"),
-                    secret = f.type == "secret", multiline = f.type == "multiline")
+                    secret = f.type == "secret", multiline = f.type == "multiline", enabled = !busy)
             }
         }
         error?.let { Text(it, color = Red) }
@@ -177,6 +179,7 @@ data class FormField(val key: String, val label: String, val type: String = "tex
                         "number" -> v.toDoubleOrNull()?.takeIf { it.isFinite() && it > 0 } ?: throw UserInput("请填写有效的${f.label}")
                         "int" -> v.toIntOrNull() ?: throw UserInput("请填写整数${f.label}")
                         "nullable" -> v.ifBlank { null } ?: org.json.JSONObject.NULL
+                        "expiry" -> com.homemeds.app.medicineExpiry(v)?.date?.toString() ?: org.json.JSONObject.NULL
                         else -> v
                     })
                 }

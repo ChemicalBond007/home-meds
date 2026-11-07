@@ -16,6 +16,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.compose.LocalLifecycleOwner
+import com.homemeds.app.preferredMedicineCode
 import com.google.mlkit.vision.barcode.BarcodeScannerOptions
 import com.google.mlkit.vision.barcode.BarcodeScanning
 import com.google.mlkit.vision.barcode.common.Barcode
@@ -34,7 +35,7 @@ import java.util.concurrent.atomic.AtomicBoolean
     val accepted = remember { AtomicBoolean(false) }
     val view = remember { PreviewView(context).apply { implementationMode = PreviewView.ImplementationMode.COMPATIBLE } }
     Modal("扫描药品条码 / 追溯码", dismiss) {
-        Text("支持商品条码、GS1、Data Matrix 和二维码。识别完全在本机进行。")
+        Text("支持商品条码、GS1、Data Matrix 和二维码。请只对准一个药盒；同时发现商品码和追溯码时优先使用追溯码。识别完全在本机进行。")
         if (permission) AndroidView({ view }, Modifier.fillMaxWidth().height(280.dp))
         else Action("允许相机扫码") { request.launch(Manifest.permission.CAMERA) }
         error?.let { Text(it, color = Red) }
@@ -79,6 +80,6 @@ private fun analyze(proxy: ImageProxy, scanner: com.google.mlkit.vision.barcode.
     val image = proxy.image
     if (image == null) { proxy.close(); return }
     scanner.process(InputImage.fromMediaImage(image, proxy.imageInfo.rotationDegrees))
-        .addOnSuccessListener { codes -> codes.firstNotNullOfOrNull { it.rawValue?.takeIf(String::isNotBlank) }?.let(scanned) }
+        .addOnSuccessListener { codes -> preferredMedicineCode(codes.mapNotNull { it.rawValue })?.let(scanned) }
         .addOnCompleteListener { proxy.close() }
 }

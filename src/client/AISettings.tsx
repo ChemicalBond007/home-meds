@@ -2,21 +2,25 @@ import { useEffect, useRef, useState, type ReactNode } from 'react';
 import { aiSettingsSchema, connectionId, deepseekBaseUrl, type AIModel, type AISettings as AIConfig, type SearchProbe } from '../shared/ai';
 import { api } from './api';
 import { Message, errorText, useLoad } from './components';
+import type { AISettingsState } from '../shared/bootstrap';
 
-export function AISettings({ children }: { children?: ReactNode }) {
-  const load = useLoad<{ settings: AIConfig; has_llm_key: boolean; has_tavily_key: boolean }>('/ai/settings');
+export function AISettings({ children, initial, onBusy }: { children?: ReactNode; initial?: AISettingsState; onBusy?: (value: boolean) => void }) {
+  const load = useLoad<AISettingsState>('/ai/settings', '', initial);
+  const [saved, setSaved] = useState<AISettingsState>();
+  const source = saved || load.data;
   const [d, setD] = useState<AIConfig>(), [extra, setExtra] = useState<string>(), [nativeExtra, setNativeExtra] = useState<string>();
   const [llmKey, setLlmKey] = useState(''), [searchKey, setSearchKey] = useState('');
   const [message, setMessage] = useState(''), [error, setError] = useState(''), [busy, setBusy] = useState(false), [probe, setProbe] = useState<unknown>();
   const [models, setModels] = useState<AIModel[]>([]), [modelLoading, setModelLoading] = useState(false), [modelError, setModelError] = useState('');
   const [searchProbe, setSearchProbe] = useState<SearchProbe>();
-  const config = d || load.data?.settings, provider = config?.provider || 'custom', base = config?.base_url || '';
+  const config = d || source?.settings, provider = config?.provider || 'custom', base = config?.base_url || '';
   const modelVersion = useRef(0), alive = useRef(true), current = useRef('');
   const signature = JSON.stringify([config, extra, nativeExtra, llmKey]);
   current.current = signature;
-  const canUseSavedKey = !!(config && load.data?.has_llm_key && connectionId(config) === connectionId(load.data.settings));
+  const canUseSavedKey = !!(config && source?.has_llm_key && connectionId(config) === connectionId(source.settings));
   const keyReady = !!llmKey.trim() || canUseSavedKey;
   useEffect(() => { alive.current = true; return () => { alive.current = false; modelVersion.current++; }; }, []);
+  useEffect(() => { onBusy?.(busy || modelLoading); return () => onBusy?.(false); }, [busy, modelLoading, onBusy]);
   const refreshModels = async (snapshot = config, version = ++modelVersion.current) => {
     if (!snapshot || version !== modelVersion.current) return;
     setModelLoading(true); setModelError('');
@@ -51,7 +55,7 @@ export function AISettings({ children }: { children?: ReactNode }) {
   });
   const switchProvider = (value: AIConfig['provider']) => {
     setLlmKey(''); setExtra(undefined); setNativeExtra(undefined); setProbe(undefined); setMessage(''); setError('');
-    patch({ provider: value, base_url: value === 'deepseek' ? deepseekBaseUrl : load.data?.settings.provider === 'custom' ? load.data.settings.base_url : '',
+    patch({ provider: value, base_url: value === 'deepseek' ? deepseekBaseUrl : source?.settings.provider === 'custom' ? source.settings.base_url : '',
       model: '', extra_body: {}, native_search_body: {}, search_mode: value === 'deepseek' ? 'builtin' : 'external',
       native_search_api: value === 'deepseek' ? 'anthropic' : 'responses', duckduckgo_enabled: false });
   };
@@ -59,8 +63,12 @@ export function AISettings({ children }: { children?: ReactNode }) {
     <form onSubmit={e => {
       e.preventDefault(); setBusy(true); setError(''); setMessage('');
       (async () => {
-        await api('/ai/settings', 'PUT', { settings: settings(), llm_key: llmKey || undefined, tavily_key: builtin ? undefined : searchKey || undefined });
-        setLlmKey(''); setSearchKey(''); setD(undefined); setExtra(undefined); setNativeExtra(undefined); setMessage('配置已保存'); load.reload();
+        const result = await api<Partial<AISettingsState>>('/ai/settings', 'PUT', { settings: settings(), llm_key: llmKey || undefined, tavily_key: builtin ? undefined : searchKey || undefined });
+        if (!alive.current) return;
+        setLlmKey(''); setSearchKey(''); setD(undefined); setExtra(undefined); setNativeExtra(undefined); setMessage('配置已保存');
+        if (result.settings && typeof result.has_llm_key === 'boolean' && typeof result.has_tavily_key === 'boolean')
+          setSaved({ settings: result.settings, has_llm_key: result.has_llm_key, has_tavily_key: result.has_tavily_key });
+        else load.reload();
       })().catch(e => setError(errorText(e))).finally(() => setBusy(false));
     }}>
       <label>LLM 提供商<select value={provider} disabled={busy} onChange={e => switchProvider(e.target.value as AIConfig['provider'])}>
@@ -95,7 +103,7 @@ export function AISettings({ children }: { children?: ReactNode }) {
       }}>{busy ? '正在处理…' : '检测内置搜索并自动选择搜索来源'}</button>
       <p className="fine">检测使用公开测试问题，不发送药箱资料，最多发起 3 次模型请求，会消耗提供商配额。只有返回接口检索来源才判定可用；网络、鉴权或限流错误不会改动搜索方式。检测后的选择须保存才生效。</p>
       {searchProbe?.sources.length ? <div><p>检测返回的来源（仍需人工核对）：</p><ul>{searchProbe.sources.map(s => <li key={s.url}><a href={s.url} target="_blank" rel="noreferrer">{s.title}</a></li>)}</ul></div> : null}
-      <label>Tavily 密钥（{builtin ? '已自动停用，无需填写' : load.data?.has_tavily_key ? '已设置，可留空' : '药品查询必需'}）<input type="password" disabled={builtin} value={searchKey} onChange={e => setSearchKey(e.target.value)} autoComplete="new-password" /></label>
+      <label>Tavily 密钥（{builtin ? '已自动停用，无需填写' : source?.has_tavily_key ? '已设置，可留空' : '药品查询必需'}）<input type="password" disabled={builtin} value={searchKey} onChange={e => setSearchKey(e.target.value)} autoComplete="new-password" /></label>
       <label>额外请求参数（JSON）<textarea value={extra ?? JSON.stringify(config.extra_body, null, 2)} onChange={e => { setExtra(e.target.value); setSearchProbe(undefined); }} spellCheck={false} /></label>
       <details><summary>内置搜索接口与参数（按供应商文档设置）</summary>
         {provider === 'deepseek' ? <p>DeepSeek 官方使用兼容 Anthropic 的服务端搜索接口；模型是否可用以检测结果为准。</p>

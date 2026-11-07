@@ -6,6 +6,7 @@ type Policy = { method: string; route: string; action: string; scope: Scope };
 const policies: Policy[] = [
   ['POST', '/auth/register', 'auth.register', 'account'],
   ['POST', '/auth/login', 'auth.login', 'account'],
+  ['POST', '/auth/admin/login', 'auth.login', 'account'],
   ['POST', '/auth/logout', 'auth.logout', 'account'],
   ['POST', '/auth/totp/setup', 'auth.totp.setup', 'account'],
   ['POST', '/auth/totp/bind', 'auth.totp.bind', 'account'],
@@ -16,6 +17,8 @@ const policies: Policy[] = [
   ['POST', '/auth/recovery/passkey/options', 'auth.recovery.options', 'account'],
   ['POST', '/auth/recovery/regenerate', 'auth.recovery.regenerate', 'account'],
   ['POST', '/admin/users/:id/reset', 'admin.reset', 'global'],
+  ['GET', '/admin/passkeys', 'admin.passkey.list', 'global'],
+  ['DELETE', '/admin/users/:id/passkeys', 'admin.passkey.delete', 'global'],
   ['POST', '/groups', 'group.create', 'target-group'],
   ['PUT', '/groups/:id', 'group.update', 'target-group'],
   ['POST', '/groups/:id/rotate-code', 'group.rotate', 'target-group'],

@@ -45,12 +45,11 @@ object Sync {
             return Outcome.SKIPPED
         }
         return try {
-            val (plansBody, groupsBody) = coroutineScope {
-                val plans = async { ApiClient.raw("GET", "/plans", groupId = groupId) }
-                val groups = async { ApiClient.raw("GET", "/groups", groupId = groupId) }
-                plans.await() to groups.await()
-            }
-            val zone = familyZone(groupsBody, groupId)
+            val snapshot = ApiClient.repository.sync(groupId)
+            if (snapshot.getString("group_id") != groupId || snapshot.optJSONObject("user")?.getString("id")?.let { it != session.userId } == true)
+                throw ApiException(403, "账号或家庭已变更，请重新打开应用")
+            val plansBody = snapshot.getJSONArray("plans").toString()
+            val zone = ZoneId.of(snapshot.getString("timezone"))
             prefs.cachedPlans = plansBody
             prefs.cachedZone = zone.id
             apply(context, prefs, session, parsePlans(plansBody), zone)
@@ -104,7 +103,7 @@ object Sync {
         }
     }
 
-    suspend fun sessionChanged(context: Context, next: Prefs.Session) {
+    suspend fun sessionChanged(context: Context, next: Prefs.Session, enqueue: Boolean = true) {
         val app = context.applicationContext
         withContext(Dispatchers.IO) {
             mutex.withLock {
@@ -117,7 +116,25 @@ object Sync {
                 prefs.activeGroupId = next.groupId
             }
         }
-        SyncWorker.enqueue(app)
+        if (enqueue) SyncWorker.enqueue(app)
+    }
+
+    suspend fun acceptSnapshot(context: Context, userId: String, groupId: String, plans: String, timezone: String) = withContext(Dispatchers.IO) {
+        mutex.withLock {
+            val prefs = Prefs(context)
+            val session = prefs.session ?: return@withLock
+            if (session.userId != userId || session.groupId != groupId) return@withLock
+            if (prefs.cachedPlans == plans && prefs.cachedZone == timezone &&
+                System.currentTimeMillis() - (prefs.lastSync ?: 0) < TimeUnit.HOURS.toMillis(1)) return@withLock
+            val zone = ZoneId.of(timezone)
+            prefs.cachedPlans = plans; prefs.cachedZone = timezone
+            apply(context, prefs, session, parsePlans(plans), zone)
+            prefs.lastSync = System.currentTimeMillis(); prefs.lastError = null
+        }
+    }
+
+    suspend fun reapply(context: Context) {
+        if (Prefs(context).cachedPlans != null) fromCache(context) else syncNow(context)
     }
 
     suspend fun syncNow(context: Context) = run(context)

@@ -65,13 +65,14 @@ class NativeApi(
     val http: OkHttpClient = OkHttpClient.Builder().connectTimeout(15, TimeUnit.SECONDS)
         .readTimeout(30, TimeUnit.SECONDS).followRedirects(false).followSslRedirects(false).build(),
 ) {
-    private fun request(method: String, path: String, body: JSONObject?, groupId: String?): Request {
+    private fun request(method: String, path: String, body: JSONObject?, groupId: String?, state: String? = null): Request {
         require(path.startsWith("/") && !path.startsWith("//")) { "Invalid API path" }
         return Request.Builder().url("$baseUrl/api$path").header("Accept", "application/json")
             .header("X-HomeMeds-Client", "android").apply {
                 if (method !in setOf("GET", "HEAD")) header("Origin", baseUrl)
                 cookie()?.takeIf { it.isNotBlank() }?.let { header("Cookie", "hm_session=$it") }
                 groupId?.let { header("X-Group-Id", it) }
+                state?.let { header("X-HomeMeds-State", it) }
                 method(method, if (method in setOf("GET", "HEAD")) null else
                     (body ?: JSONObject()).toString().toRequestBody("application/json; charset=utf-8".toMediaType()))
             }.build()
@@ -95,8 +96,8 @@ class NativeApi(
         throw ApiException(response.code, message)
     }
 
-    suspend fun raw(method: String, path: String, body: JSONObject? = null, groupId: String? = activeGroup(), timeout: Long = 30): String {
-        val call = http.newBuilder().callTimeout(timeout, TimeUnit.SECONDS).build().newCall(request(method, path, body, groupId))
+    suspend fun raw(method: String, path: String, body: JSONObject? = null, groupId: String? = activeGroup(), timeout: Long = 30, state: String? = null): String {
+        val call = http.newBuilder().callTimeout(timeout, TimeUnit.SECONDS).build().newCall(request(method, path, body, groupId, state))
         return call.consume { response ->
             capture(response)
             val source = response.body.source()
@@ -107,8 +108,8 @@ class NativeApi(
             text
         }
     }
-    suspend fun obj(method: String, path: String, body: JSONObject? = null, groupId: String? = activeGroup()) =
-        JSONObject(raw(method, path, body, groupId))
+    suspend fun obj(method: String, path: String, body: JSONObject? = null, groupId: String? = activeGroup(), state: String? = null) =
+        JSONObject(raw(method, path, body, groupId, state = state))
     suspend fun array(path: String, groupId: String? = activeGroup()) = JSONArray(raw("GET", path, groupId = groupId))
 
     suspend fun sse(path: String, body: JSONObject, groupId: String? = activeGroup(), emit: suspend (String, Any) -> Unit) {
@@ -133,9 +134,12 @@ class NativeApi(
 object ApiClient {
     private lateinit var client: NativeApi
     private lateinit var prefs: Prefs
-    fun init(context: Context) {
+    internal lateinit var repository: AppRepository
+        private set
+    fun init(context: Context, api: NativeApi? = null) {
         prefs = Prefs(context)
-        client = NativeApi(Config.baseUrl, { prefs.sessionCookie }, { prefs.sessionCookie = it }, { prefs.activeGroupId })
+        client = api ?: NativeApi(Config.baseUrl, { prefs.sessionCookie }, { prefs.sessionCookie = it }, { prefs.activeGroupId })
+        repository = AppRepository(client)
     }
     suspend fun raw(method: String, path: String, body: JSONObject? = null, groupId: String? = prefs.activeGroupId, timeout: Long = 30) =
         client.raw(method, path, body, groupId, timeout)

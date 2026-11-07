@@ -10,6 +10,36 @@ import java.time.temporal.ChronoUnit
 
 fun stateLabel(state: String) = when (state) { "taken" -> "已吃"; "skipped" -> "已跳过"; "overdue" -> "已过时，先核实"; else -> "待吃" }
 
+@Composable internal fun ScannedMedicineResult(state: AppState, data: JSONObject, code: String, intake: () -> Unit) {
+    val resolved = resolveMedicineCode(data, code, state.products, state.stock)
+    val product = resolved.optJSONObject("product")
+    val box = resolved.optJSONObject("box")
+    val speak = LocalSpeak.current
+    Text("识别类型：${parseCode(code).kind}")
+    if (product != null) {
+        Text(product.getString("name"), style = MaterialTheme.typography.titleLarge)
+        listOf("specification" to "规格", "manufacturer" to "厂家", "indications" to "适应症", "precautions" to "注意事项").forEach { (key, label) ->
+            product.nullable(key)?.let { Text("$label：$it") }
+        }
+        if (box == null) state.stock.filter { it.productId == product.getString("id") && it.available }.forEach {
+            Text(boxLabel(it, state.today), color = if (it.expiry?.let { d -> d < state.today } == true) Red else Ink)
+        }
+        Action("朗读资料", secondary = true) { speak("${product.getString("name")}。${product.nullable("indications").orEmpty()}。${product.nullable("precautions").orEmpty()}") }
+    } else if (box != null) Text("已识别已入库药盒，药品资料暂未加载，请刷新后查看。")
+    else Text("尚未关联药品，可手动录入，或让 AI 检索后逐项核对。")
+    if (box != null) {
+        Text("已匹配此追溯码对应的已入库药盒，请勿重复添加。", color = Muted)
+        listOf("trace_code" to "追溯码", "expiry_date" to "有效期", "batch_number" to "批号",
+            "units_remaining" to "剩余数量", "warehouse_name" to "药箱").forEach { (key, label) ->
+            box.nullable(key)?.let { Text("$label：$it") }
+        }
+        val expiry = box.nullable("expiry_date")?.let { runCatching { medicineExpiry(it)?.date?.toString() }.getOrNull() }
+        if (expiry != null && expiry < state.today) Text("此药盒已过期，请勿自行服用。", color = Red)
+        Text("药盒状态：" + when (box.optString("status")) { "empty" -> "用尽"; "discarded" -> "报废"; "active" -> "在库"; else -> "待刷新确认" })
+    }
+    Action("进入入库向导", enabled = box == null && !state.busy, onClick = intake)
+}
+
 @Composable internal fun MedicineLookupEntry(enabled: Boolean, scan: () -> Unit, photograph: () -> Unit) {
     var choose by remember { mutableStateOf(false) }
     Action("扫码查药 / 入库", enabled = enabled) { choose = true }
@@ -80,21 +110,7 @@ fun stateLabel(state: String) = when (state) { "taken" -> "已吃"; "skipped" ->
     }
     result?.let { data ->
         Modal("扫码结果", { result = null }) {
-            val product = data.optJSONObject("product")
-            val box = data.optJSONObject("box")
-            Text("识别类型：${parseCode(code).kind}")
-            if (product != null) {
-                Text(product.getString("name"), style = MaterialTheme.typography.titleLarge)
-                listOf("specification" to "规格", "manufacturer" to "厂家", "indications" to "适应症", "precautions" to "注意事项").forEach { (key, label) ->
-                    product.nullable(key)?.let { Text("$label：$it") }
-                }
-                state.stock.filter { it.productId == product.getString("id") && it.available }.forEach {
-                    Text(boxLabel(it, state.today), color = if (it.expiry?.let { d -> d < state.today } == true) Red else Ink)
-                }
-                if (box != null) Text("该追溯码药盒已入库，请勿重复添加。", color = Red)
-                Action("朗读资料", secondary = true) { speak("${product.getString("name")}。${product.nullable("indications").orEmpty()}。${product.nullable("precautions").orEmpty()}") }
-            } else Text("尚未关联药品，可手动录入，或让 AI 检索后逐项核对。")
-            Action("进入入库向导", enabled = box == null) { result = null; intakeDraft = null; intake = true }
+            ScannedMedicineResult(state, data, code) { result = null; intakeDraft = null; intake = true }
         }
     }
     if (photograph) PhotoCaptureDialog({ photograph = false; photos = emptyList() }, initialPhotos = photos) {

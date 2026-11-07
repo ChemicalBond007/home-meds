@@ -21,13 +21,13 @@ import org.json.JSONObject
     val sources = parseSources(draft.opt("sources"))
     Sources(sources)
     if (sources.isEmpty()) Text("本次仅按照片可见文字预填，没有公开资料来源。", color = Muted)
-    val match = matchMedicineDraft(draft, state.products)
+    val existingBox = knownTraceBox(draft.nullable("code").orEmpty(), state.stock)
+    val match = if (existingBox != null) state.products.firstOrNull { it.id == existingBox.productId } else matchMedicineDraft(draft, state.products)
     if (match != null) {
         Text("已匹配家庭药品，可继续核对实物入库。")
         state.stock.filter { it.productId == match.id && it.available }.forEach { Text(boxLabel(it, state.today)) }
     } else Text("未找到唯一匹配的家庭药品，入库前需先核对药品资料。")
-    val trace = parseCode(draft.nullable("code").orEmpty()).traceCode
-    val duplicate = trace != null && state.stock.any { it.trace == trace }
+    val duplicate = existingBox != null
     if (duplicate) Text("该追溯码药盒已入库，请勿重复添加。", color = Red)
     Text("尚未保存。请核对同一药盒的药名、规格、数量、有效期和批号。不同药盒请分开查询。", color = Red)
     Action("核对并入库", enabled = !duplicate && !state.busy, onClick = intake)

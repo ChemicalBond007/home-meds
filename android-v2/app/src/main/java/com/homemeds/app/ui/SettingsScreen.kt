@@ -187,7 +187,7 @@ import java.time.format.DateTimeFormatter
         FormField("group_id", "所属家庭（已有计划时不能跨家庭）", "choice", listOf("" to "不分组") + state.groups.map { it.id to it.name })),
         json("is_elderly" to u.elderly, "group_id" to u.groupId), state.busy, { member = null }) { body ->
         if (body.optString("group_id").isBlank()) body.put("group_id", JSONObject.NULL)
-        vm.save("PATCH", "/members/${u.id}", body) { member = null; vm.refresh() }
+        vm.save("PATCH", "/members/${u.id}", body) { member = null }
     } }
     removeWarehouse?.let { w -> Confirm("删除空药箱", "删除 ${w.getString("name")}？有过库存记录的药箱不能删除，请改名。", { removeWarehouse = null }) {
         vm.save("DELETE", "/warehouses/${w.getString("id")}") { removeWarehouse = null }
@@ -249,8 +249,7 @@ private val aiFields = listOf(
             } }
             if (models.isNotEmpty()) Picker("选择模型并保存", settings.getString("model"), models, { id ->
                 vm.perform {
-                    vm.postSettings(JSONObject(settings.toString()).put("model", id))
-                    data = vm.get("/ai/settings")
+                    data = vm.postSettings(JSONObject(settings.toString()).put("model", id))
                 }
             }, !state.busy)
             Action("检测内置检索能力", secondary = true, enabled = !state.busy) { vm.perform {
@@ -263,7 +262,7 @@ private val aiFields = listOf(
                 result += "\n检测结果尚未保存，请点击下方保存。"
             } }
             Action("保存当前检索 / 模型选择", secondary = true, enabled = !state.busy) { vm.perform {
-                vm.postSettings(settings); data = vm.get("/ai/settings"); result = "已保存"
+                data = vm.postSettings(settings); result = "已保存"
             } }
             Action("运行接口能力探针", secondary = true, enabled = !state.busy) { vm.perform { result = vm.post("/ai/probe").toString(2) } }
             if (result.isNotBlank()) Text(result)
@@ -296,14 +295,18 @@ private val aiFields = listOf(
             body.remove("extra_body_text"); body.remove("native_search_body_text")
             vm.perform {
                 val payload = json("settings" to body).apply { if (llm.isNotEmpty()) put("llm_key", llm); if (tavily.isNotEmpty()) put("tavily_key", tavily) }
-                vm.mutate("PUT", "/ai/settings", payload)
-                data = vm.get("/ai/settings"); edit = false
+                val response = vm.mutate("PUT", "/ai/settings", payload)
+                data = if (response.has("settings")) response else vm.get("/ai/settings")
+                edit = false
             }
         }
     }
 }
 
-private suspend fun AppViewModel.postSettings(settings: JSONObject) { mutate("PUT", "/ai/settings", json("settings" to settings)) }
+private suspend fun AppViewModel.postSettings(settings: JSONObject): JSONObject {
+    val response = mutate("PUT", "/ai/settings", json("settings" to settings))
+    return if (response.has("settings")) response else get("/ai/settings")
+}
 private fun kotlinx.coroutines.CoroutineScope.launchSafely(vm: AppViewModel, block: suspend () -> Unit) = launch {
     try { block() } catch (e: CancellationException) { throw e } catch (e: Exception) { vm.error(e.message ?: "请求失败") }
 }

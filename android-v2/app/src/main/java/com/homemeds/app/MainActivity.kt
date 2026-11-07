@@ -15,6 +15,7 @@ import androidx.compose.material.icons.automirrored.filled.Chat
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.viewmodel.compose.viewModel
@@ -29,6 +30,33 @@ val LocalSpeak = staticCompositionLocalOf<(String) -> Unit> { {} }
 val LocalCalendarPermission = staticCompositionLocalOf<() -> Unit> { {} }
 val LocalNotificationPermission = staticCompositionLocalOf<() -> Unit> { {} }
 internal fun appTitle(route: String) = if (route == "chat") "赛博药箱AI助手" else "赛博药箱"
+
+private val appScreens = listOf("home" to "今日", "inventory" to "药箱", "chat" to "助手", "plans" to "计划", "settings" to "设置")
+
+@Composable internal fun AssistantHeader(canClear: Boolean, clear: () -> Unit) {
+    Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+        Text(appTitle("chat"), Modifier.weight(1f), style = MaterialTheme.typography.titleLarge)
+        IconButton(clear, Modifier.size(touchHeight), enabled = canClear) {
+            Icon(Icons.Default.DeleteSweep, "清空对话历史")
+        }
+    }
+}
+
+@Composable internal fun AppNavigationBar(route: String, elderly: Boolean, navigate: (String) -> Unit) {
+    NavigationBar(containerColor = MaterialTheme.colorScheme.surface) {
+        appScreens.filterNot { elderly && it.first in setOf("plans", "chat") }.forEach { (id, title) ->
+            val icon = when (id) {
+                "home" -> Icons.Default.Home
+                "inventory" -> Icons.Default.Inventory2
+                "chat" -> Icons.AutoMirrored.Filled.Chat
+                "plans" -> Icons.Default.Schedule
+                else -> Icons.Default.Settings
+            }
+            NavigationBarItem(route == id, onClick = { navigate(id) },
+                icon = { Icon(icon, title) }, label = { Text(title) }, modifier = Modifier.heightIn(min = touchHeight))
+        }
+    }
+}
 
 class MainActivity : ComponentActivity() {
     private var target by mutableStateOf<NotificationTarget?>(null)
@@ -78,8 +106,7 @@ class MainActivity : ComponentActivity() {
     val route = back?.destination?.route ?: "home"
     val speak = LocalSpeak.current
     var dose by remember(state.user?.id, state.groupId) { mutableStateOf<DoseRequest?>(null) }
-    val screens = listOf("home" to "今日", "inventory" to "药箱", "plans" to "计划", "chat" to "助手", "settings" to "设置")
-    val icons = listOf(Icons.Default.Home, Icons.Default.Inventory2, Icons.Default.Schedule, Icons.AutoMirrored.Filled.Chat, Icons.Default.Settings)
+    var clearChat by remember(state.user?.id, state.groupId) { mutableStateOf(false) }
     LaunchedEffect(state.user?.elderly) {
         if (state.user?.elderly == true && route in setOf("plans", "chat")) nav.navigate("home") { popUpTo("home") { inclusive = true } }
     }
@@ -101,20 +128,17 @@ class MainActivity : ComponentActivity() {
     }
     Scaffold(containerColor = Cream, topBar = {
         if (state.user != null && !state.bindingOnly) Column(Modifier.padding(horizontal = 16.dp, vertical = 8.dp).statusBarsPadding()) {
-            Row {
+            if (route == "chat") AssistantHeader(!state.busy) { clearChat = true }
+            else Row {
                 Text(appTitle(route), Modifier.weight(1f), style = MaterialTheme.typography.titleLarge)
-                if (route != "chat") Action("朗读", secondary = true) { speak("今天 ${state.today}。" + state.todos.filter { it.plan.userId == state.user.id }.joinToString("。") { "${it.time} ${it.plan.medicineName} ${Texts.amount(it.plan.amount)}${it.plan.unit}，${stateLabel(it.state)}" }) }
+                Action("朗读", secondary = true) { speak("今天 ${state.today}。" + state.todos.filter { it.plan.userId == state.user.id }.joinToString("。") { "${it.time} ${it.plan.medicineName} ${Texts.amount(it.plan.amount)}${it.plan.unit}，${stateLabel(it.state)}" }) }
             }
             if (state.user.admin) Picker("当前家庭", state.groupId, state.groups.map { it.id to it.name }, vm::selectGroup, !state.busy)
             else Text("${state.groups.find { it.id == state.groupId }?.name.orEmpty()} · ${state.user.username}", color = Muted)
         }
     }, bottomBar = {
-        if (state.user != null && !state.bindingOnly) NavigationBar(containerColor = MaterialTheme.colorScheme.surface) {
-            screens.forEachIndexed { i, (id, title) ->
-                if (!(state.user.elderly && i in 2..3)) NavigationBarItem(route == id,
-                    onClick = { nav.navigate(id) { popUpTo("home") { saveState = true }; launchSingleTop = true; restoreState = true } },
-                    icon = { Icon(icons[i], title) }, label = { Text(title) }, modifier = Modifier.heightIn(min = touchHeight))
-            }
+        if (state.user != null && !state.bindingOnly) AppNavigationBar(route, state.user.elderly) { id ->
+            nav.navigate(id) { popUpTo("home") { saveState = true }; launchSingleTop = true; restoreState = true }
         }
     }) { padding ->
         Column(Modifier.fillMaxSize().padding(padding)) {
@@ -133,7 +157,7 @@ class MainActivity : ComponentActivity() {
                     composable("home") { HomeScreen(vm, state) { dose = it } }
                     composable("inventory") { InventoryScreen(vm, state) }
                     composable("plans") { PlansScreen(vm, state) { dose = it } }
-                    composable("chat") { ChatScreen(vm, state) }
+                    composable("chat") { ChatScreen(vm, state, clearChat) { clearChat = false } }
                     composable("settings") { SettingsScreen(vm, state) }
                 }
             }

@@ -28,6 +28,27 @@ internal fun assistantTarget(state: AppState): String? {
     return target?.takeIf { id -> state.members.any { it.id == id } }
 }
 
+internal fun appSnapshot(body: JSONObject, previous: AppState): AppState {
+    require(body.getInt("api_version") in 0..1) { "状态接口版本不受支持" }
+    val user = User.parse(body.getJSONObject("user"))
+    val groups = body.getJSONArray("groups").objects().map(FamilyGroup::parse)
+    val group = body.nullable("group_id")
+    val limited = body.getBoolean("binding_only")
+    require(limited || user.admin || group == user.groupId) { "账号所属家庭已变更" }
+    require(group == null || groups.any { it.id == group }) { "家庭状态不完整" }
+    val today = body.optJSONObject("today")
+    require(limited || group == null || today != null) { "今日清单状态不完整" }
+    return previous.copy(loading = false, user = user, bindingOnly = limited, groups = groups, groupId = group,
+        members = body.getJSONArray("members").objects().map(User::parse),
+        products = body.getJSONArray("products").objects().map(::Product),
+        stock = body.getJSONArray("stock").objects().map(::StockItem),
+        plans = parsePlans(body.getJSONArray("plans").toString()),
+        warehouses = body.getJSONArray("warehouses").objects(),
+        todos = today?.getJSONArray("items")?.objects()?.map(Todo::parse).orEmpty(),
+        today = today?.getString("date") ?: LocalDate.now(DEFAULT_ZONE).toString(),
+        timezone = today?.getString("timezone") ?: "Asia/Shanghai")
+}
+
 class AppViewModel(app: Application) : AndroidViewModel(app) {
     private val app get() = getApplication<Application>()
     val prefs = Prefs(app)
@@ -50,23 +71,36 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     fun error(message: String?) { mutable.update { it.copy(error = message) } }
     fun notice(message: String?) { mutable.update { it.copy(notice = message) } }
     private suspend fun restore() {
+        val epoch = generation
         try {
-            val me = ApiClient.request("GET", "/auth/me")
-            val user = User.parse(me.getJSONObject("user"))
-            mutable.update { it.copy(user = user, bindingOnly = me.optBoolean("binding_only"), loading = false) }
-            if (!me.optBoolean("binding_only")) loadGroups(user)
+            acceptSnapshot(ApiClient.repository.bootstrap(prefs.activeGroupId), epoch)
         } catch (e: CancellationException) { throw e }
         catch (e: ApiException) {
+            if (epoch != generation) return
             if (e.status == 401) { Sync.logout(app); mutable.value = AppState(loading = false) }
             else mutable.update { it.copy(loading = false, error = e.message) }
-        } catch (_: Exception) { mutable.update { it.copy(loading = false, error = "无法连接服务器，请检查网络后重试") } }
+        } catch (_: Exception) {
+            if (epoch == generation) mutable.update { it.copy(loading = false, error = "无法连接服务器，请检查网络后重试") }
+        }
     }
-    private suspend fun loadGroups(user: User) {
-        val groups = ApiClient.array("/groups").objects().map(FamilyGroup::parse)
-        val selected = if (user.admin) (prefs.activeGroupId?.takeIf { id -> groups.any { it.id == id } } ?: groups.firstOrNull()?.id)
-            else user.groupId
-        mutable.update { it.copy(groups = groups) }
-        selectGroupNow(selected)
+    private suspend fun acceptSnapshot(body: JSONObject, epoch: Int) {
+        if (epoch != generation) return
+        val before = mutable.value
+        val next = appSnapshot(body, before)
+        val user = next.user ?: return
+        val contextChanged = before.user?.id != user.id || before.groupId != next.groupId
+        val session = Prefs.Session(user.id, next.groupId, user.elderly)
+        if (prefs.session != session || prefs.activeGroupId != next.groupId) Sync.sessionChanged(app, session, enqueue = false)
+        if (epoch != generation) return
+        if (!next.bindingOnly && next.groupId != null) {
+            try { Sync.acceptSnapshot(app, user.id, next.groupId, body.getJSONArray("plans").toString(), next.timezone) }
+            catch (e: CancellationException) { throw e }
+            catch (_: Exception) { notice("数据已更新，本地提醒同步失败，请到设置重试。") }
+        }
+        if (epoch != generation) return
+        mutable.update { next.copy(busy = it.busy, error = it.error, notice = it.notice,
+            assistantTarget = if (contextChanged) next.groupId?.let { id -> prefs.assistantTarget(user.id, id) } else it.assistantTarget,
+            assistantPhone = prefs.assistantPhone) }
     }
     private suspend fun selectGroupNow(id: String?) {
         val user = mutable.value.user ?: return
@@ -75,9 +109,8 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         mutable.update { it.copy(groupId = id, members = emptyList(), products = emptyList(), stock = emptyList(),
             plans = emptyList(), todos = emptyList(), warehouses = emptyList(),
             assistantTarget = id?.let { prefs.assistantTarget(user.id, it) }, assistantPhone = prefs.assistantPhone) }
-        Sync.sessionChanged(app, Prefs.Session(user.id, id, user.elderly))
-        if (id != null) refreshNow()
-        syncDebounced()
+        val epoch = generation
+        acceptSnapshot(ApiClient.repository.bootstrap(id), epoch)
     }
     fun selectGroup(id: String) {
         if (id == mutable.value.groupId || mutable.value.busy) return
@@ -87,33 +120,14 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         if (refreshJob?.isActive == true) return
         refreshJob = viewModelScope.launch {
             try {
-                if (mutable.value.user == null) restore() else {
-                    val me = ApiClient.request("GET", "/auth/me")
-                    val user = User.parse(me.getJSONObject("user"))
-                    val previous = mutable.value.user
-                    mutable.update { it.copy(user = user) }
-                    if (previous?.groupId != user.groupId || previous?.elderly != user.elderly) loadGroups(user) else refreshNow()
-                }
+                if (mutable.value.user == null) restore() else refreshNow()
             } catch (e: CancellationException) { throw e }
             catch (e: Exception) { handle(e) }
         }
     }
     private suspend fun refreshNow() {
-        val g = mutable.value.groupId ?: return
         val epoch = generation
-        coroutineScope {
-            val members = async { ApiClient.array("/members", g).objects().map(User::parse) }
-            val products = async { ApiClient.array("/products", g).objects().map(::Product) }
-            val stock = async { ApiClient.array("/stock", g).objects().map(::StockItem) }
-            val plans = async { parsePlans(ApiClient.raw("GET", "/plans", groupId = g)) }
-            val today = async { ApiClient.request("GET", "/today", groupId = g) }
-            val warehouses = async { ApiClient.array("/warehouses", g).objects() }
-            val next = mutable.value.copy(members = members.await(), products = products.await(), stock = stock.await(),
-                plans = plans.await(), warehouses = warehouses.await(), todos = today.await().getJSONArray("items").objects().map(Todo::parse),
-                today = today.await().getString("date"), timezone = today.await().getString("timezone"))
-            if (generation == epoch) mutable.update { next.copy(busy = it.busy, error = it.error, notice = it.notice,
-                assistantTarget = it.assistantTarget, assistantPhone = it.assistantPhone) }
-        }
+        acceptSnapshot(ApiClient.repository.bootstrap(mutable.value.groupId), epoch)
     }
     private suspend fun handle(e: Exception) {
         if (e is ApiException && e.status == 401) {
@@ -124,6 +138,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     fun perform(block: suspend () -> Unit) {
         if (operation?.isActive == true) return
         operation = viewModelScope.launch {
+            generation++
             refreshJob?.cancel()
             mutable.update { it.copy(busy = true, error = null) }
             try { block() }
@@ -133,6 +148,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
     fun authenticate(path: String, body: JSONObject) = perform {
+        generation++
         ApiClient.request("POST", path, body)
         restore()
     }
@@ -145,15 +161,12 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         done(mutate(method, path, body))
     }
     suspend fun mutate(method: String, path: String, body: JSONObject? = null): JSONObject {
-        val response = ApiClient.request(method, path, body, mutable.value.groupId)
-        if (path.startsWith("/plans") || path.startsWith("/doses") || path.startsWith("/members") || path.startsWith("/groups")) syncDebounced()
+        val epoch = generation
+        val response = ApiClient.repository.mutate(method, path, body, mutable.value.groupId)
+        if (epoch != generation || !snapshotMutation(path)) return response
         try {
-            if (path.startsWith("/groups")) {
-                val groups = ApiClient.array("/groups").objects().map(FamilyGroup::parse)
-                mutable.update { it.copy(groups = groups) }
-                if (mutable.value.groupId == null) selectGroupNow(groups.firstOrNull()?.id)
-            }
-            if (mutable.value.groupId != null) refreshNow()
+            val snapshot = response.optJSONObject("app_state")
+            if (snapshot != null) acceptSnapshot(snapshot, epoch) else refreshNow()
         } catch (e: CancellationException) { throw e }
         catch (_: Exception) {
             notice("已保存，但列表刷新失败，请手动刷新，不要重复提交。")
@@ -162,7 +175,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     }
     fun syncDebounced() {
         syncJob?.cancel()
-        syncJob = viewModelScope.launch { delay(1500); Sync.syncNow(app) }
+        syncJob = viewModelScope.launch { delay(1500); Sync.reapply(app) }
     }
     fun setAssistantTarget(id: String) {
         val s = mutable.value

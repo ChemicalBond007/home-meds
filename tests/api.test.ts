@@ -185,6 +185,125 @@ describe('recovery code regeneration', () => {
     expect((await call('/auth/passkey/login', 'POST', { id: next.id, response: await key.sign(next.options.challenge) }, 'unused')).status).toBe(200);
   });
 });
+describe('administrator passkey management', () => {
+  const list = () => call('/admin/passkeys', 'GET', undefined, 'test-admin');
+  const remove = (user: string, id: string, token = 'test-admin', extra: Record<string, string> = {}) =>
+    call(`/admin/users/${user}/passkeys`, 'DELETE', { credential_id: id }, token, extra);
+  async function otherAdmin() {
+    await env.DB.prepare("INSERT INTO users(id,username,role,group_id) VALUES('b','另一管理员','admin','other')").run();
+    return passkey('b');
+  }
+  it('rejects anonymous, member and binding-only sessions for both listing and deletion', async () => {
+    const key = await passkey('a');
+    for (const [token, status] of [['invalid', 401], ['test-session', 403]] as const) {
+      expect((await call('/admin/passkeys', 'GET', undefined, token)).status).toBe(status);
+      expect((await remove('a', key.id, token)).status).toBe(status);
+    }
+    await env.DB.prepare("UPDATE sessions SET binding_only=1 WHERE user_id='a'").run();
+    expect((await list()).status).toBe(403);
+    expect((await remove('a', key.id)).status).toBe(403);
+    expect(await env.DB.prepare('SELECT COUNT(*) n FROM webauthn_credentials').first('n')).toBe(1);
+  });
+  it('lists all administrators across families and exposes only credential identifiers and transports', async () => {
+    const own = await passkey('a'), other = await otherAdmin();
+    await passkey('u');
+    await env.DB.prepare("UPDATE webauthn_credentials SET transports='[\"usb\",\"internal\"]' WHERE id=?").bind(own.id).run();
+    await env.DB.prepare("UPDATE webauthn_credentials SET transports='not-json' WHERE id=?").bind(other.id).run();
+    const response = await list();
+    expect(response.headers.get('Cache-Control')).toBe('no-store');
+    const data = await response.json() as { id: string; passkeys: { id: string; transports: string[] }[] }[];
+    expect(data.map(a => a.id).sort()).toEqual(['a', 'b']);
+    expect(data.find(a => a.id === 'a')?.passkeys).toEqual([{ id: own.id, transports: ['usb', 'internal'] }]);
+    expect(data.find(a => a.id === 'b')?.passkeys).toEqual([{ id: other.id, transports: [] }]);
+    expect(JSON.stringify(data)).not.toMatch(/public_key|counter|token_hash|encrypted_secret/);
+    const bootstrap = await (await call('/admin/bootstrap', 'GET', undefined, 'test-admin')).json() as { passkey_admins: unknown };
+    expect(bootstrap.passkey_admins).toEqual(data);
+  });
+  it('deletes just the selected own credential and returns updated state without resetting other factors or sessions', async () => {
+    const selected = await passkey('a'), remaining = await passkey('a'), other = await otherAdmin();
+    const codes = await issueSecrets(env.DB, 'a', 'recovery');
+    await env.DB.batch([
+      ...codes.statements,
+      env.DB.prepare("INSERT INTO totp_secrets(user_id,encrypted_secret,verified) VALUES('a','unchanged-secret',1)"),
+    ]);
+    const result = await remove('a', selected.id);
+    expect(result.status).toBe(200);
+    const body = await result.json() as { ok: boolean; passkey_admins: { id: string; totp: boolean; passkeys: { id: string }[] }[] };
+    expect(body.ok).toBe(true);
+    expect(body.passkey_admins.find(a => a.id === 'a')).toMatchObject({ totp: true, passkeys: [{ id: remaining.id }] });
+    expect(body.passkey_admins.find(a => a.id === 'b')?.passkeys).toEqual([{ id: other.id, transports: [] }]);
+    expect(await env.DB.prepare("SELECT encrypted_secret FROM totp_secrets WHERE user_id='a'").first('encrypted_secret')).toBe('unchanged-secret');
+    expect(await consumeSecret(env.DB, 'a', codes.values[0])).not.toBeNull();
+    expect((await call('/auth/me', 'GET', undefined, 'test-admin')).status).toBe(200);
+    const audit = await env.DB.prepare("SELECT * FROM audit_logs WHERE action='admin.passkey.delete'").first();
+    expect(audit).toMatchObject({ actor_id: 'a', target_id: 'a', subject_name: '管理员', outcome: 'success' });
+    expect(JSON.stringify(audit)).not.toContain(selected.id);
+  });
+  it('allows another administrator’s last key to be revoked without resetting their login sessions', async () => {
+    const key = await otherAdmin();
+    await env.DB.prepare('INSERT INTO sessions(token_hash,user_id,expires_at) VALUES(?,?,?)')
+      .bind(await hash('other-admin'), 'b', Date.now() + 86400000).run();
+    expect((await remove('b', key.id)).status).toBe(200);
+    expect(await env.DB.prepare("SELECT COUNT(*) n FROM webauthn_credentials WHERE user_id='b'").first('n')).toBe(0);
+    expect((await call('/auth/me', 'GET', undefined, 'other-admin')).status).toBe(200);
+    expect(await env.DB.prepare("SELECT target_id FROM audit_logs WHERE action='admin.passkey.delete'").first('target_id')).toBe('b');
+  });
+  it('validates ownership, target role, body and same-origin protection without deleting any credential', async () => {
+    const key = await otherAdmin(), member = await passkey('u');
+    expect((await remove('a', key.id)).status).toBe(404);
+    expect((await remove('u', member.id)).status).toBe(404);
+    expect((await remove('missing', key.id)).status).toBe(404);
+    expect((await remove('b', key.id, 'test-admin', { Origin: 'https://evil.test' })).status).toBe(403);
+    expect((await call('/admin/users/b/passkeys', 'DELETE', {}, 'test-admin')).status).toBe(400);
+    expect((await remove('b', 'invalid/path')).status).toBe(400);
+    expect(await env.DB.prepare('SELECT COUNT(*) n FROM webauthn_credentials').first('n')).toBe(2);
+  });
+  it('invalidates outstanding assertions and removes the revoked key from future login options', async () => {
+    const key = await passkey('a'), remaining = await passkey('a');
+    const challenge = async () => await (await call('/auth/passkey/options', 'POST', { username: '管理员' }, 'unused')).json() as {
+      id: string; options: { challenge: string; allowCredentials: { id: string }[] };
+    };
+    const pending = await challenge(), assertion = await key.sign(pending.options.challenge);
+    expect((await remove('a', key.id)).status).toBe(200);
+    expect((await call('/auth/passkey/login', 'POST', { id: pending.id, response: assertion }, 'unused')).status).toBe(401);
+    const next = await challenge();
+    expect(next.options.allowCredentials.map(k => k.id)).toEqual([remaining.id]);
+    expect((await call('/auth/passkey/login', 'POST', { id: next.id, response: await remaining.sign(next.options.challenge) }, 'unused')).status).toBe(200);
+  });
+  it('deletes once under repeated or concurrent requests and keeps challenges on a missing-key request', async () => {
+    const key = await passkey('a');
+    const responses = await Promise.all([remove('a', key.id), remove('a', key.id)]);
+    expect(responses.map(r => r.status).sort()).toEqual([200, 404]);
+    await env.DB.prepare("INSERT INTO auth_challenges(id,user_id,kind,challenge,expires_at) VALUES('pending','a','authenticate','challenge',?)")
+      .bind(Date.now() + 300000).run();
+    expect((await remove('a', key.id)).status).toBe(404);
+    expect(await env.DB.prepare("SELECT COUNT(*) n FROM auth_challenges WHERE id='pending'").first('n')).toBe(1);
+  });
+  it('preserves delete success when refreshing metadata fails after the write commits', async () => {
+    const key = await passkey('a');
+    let committed = false;
+    const db = new Proxy(env.DB, { get(target, property) {
+      if (property === 'prepare') return (query: string) => {
+        if (committed && query.includes("FROM users u WHERE u.role='admin'")) throw new Error('metadata refresh unavailable');
+        return target.prepare(query);
+      };
+      if (property === 'batch') return async (statements: D1PreparedStatement[]) => {
+        const result = await target.batch(statements);
+        committed = true;
+        return result;
+      };
+      const value = Reflect.get(target, property);
+      return typeof value === 'function' ? value.bind(target) : value;
+    } });
+    const response = await app.request('https://home.test/api/admin/users/a/passkeys', {
+      method: 'DELETE', headers: { Origin: 'https://home.test', Cookie: 'hm_session=test-admin', 'Content-Type': 'application/json' },
+      body: JSON.stringify({ credential_id: key.id }),
+    }, { ...env, DB: db });
+    expect(response.status).toBe(200);
+    expect(await response.json()).toMatchObject({ ok: true, state_error: expect.stringContaining('已删除') });
+    expect(await env.DB.prepare('SELECT COUNT(*) n FROM webauthn_credentials WHERE id=?').bind(key.id).first('n')).toBe(0);
+  });
+});
 describe('atomic inventory and doses', () => {
   it('deducts once, records actor, and restores only once', async () => {
     const r = await call('/doses', 'POST', dose());

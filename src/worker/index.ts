@@ -11,6 +11,7 @@ import { appAi } from './app-ai';
 import { push, runReminders } from './push';
 import { audit } from './audit';
 import { logs } from './logs';
+import { bootstrap, mutationSnapshot } from './bootstrap';
 import type { AppEnv, Bindings } from './core';
 
 export const app = new Hono<AppEnv>();
@@ -22,6 +23,8 @@ app.use('/api/*', async (c, next) => {
 app.use('/api/*', audit);
 app.use('/api/*', bodyLimit({ maxSize: 256 * 1024 }));
 app.route('/api', auth);
+app.use('/api/*', mutationSnapshot);
+app.route('/api', bootstrap);
 app.get('/api/health', c => c.json({ ok: true }));
 app.route('/api', management);
 app.route('/api', inventory);

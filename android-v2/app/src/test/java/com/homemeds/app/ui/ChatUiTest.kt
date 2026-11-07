@@ -9,12 +9,18 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.*
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.semantics.SemanticsProperties
+import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.test.*
 import androidx.compose.ui.test.junit4.createComposeRule
 import androidx.compose.ui.unit.dp
 import com.homemeds.app.Prefs
 import com.homemeds.app.User
 import com.homemeds.app.appTitle
+import com.homemeds.app.AppNavigationBar
+import com.homemeds.app.AssistantHeader
+import kotlinx.coroutines.awaitCancellation
+import kotlinx.coroutines.launch
 import org.junit.Assert.*
 import org.junit.Rule
 import org.junit.Test
@@ -40,6 +46,111 @@ class ChatUiTest {
     private var camera = 0
     private var voice = 0
     private var stops = 0
+
+    @Test fun clearButtonIsToTheRightOfAssistantTitleAndDisabledWhileSaving() {
+        var enabled by mutableStateOf(false)
+        var requests = 0
+        compose.setContent { MaterialTheme { AssistantHeader(enabled) { requests++ } } }
+        val title = compose.onNodeWithText("赛博药箱AI助手").fetchSemanticsNode().boundsInRoot
+        val clear = compose.onNodeWithContentDescription("清空对话历史")
+        clear.assertIsNotEnabled()
+        assertTrue(clear.fetchSemanticsNode().boundsInRoot.left >= title.right)
+        compose.runOnIdle { enabled = true }
+        clear.assertIsEnabled().performClick()
+        compose.runOnIdle { assertEquals(1, requests) }
+    }
+
+    @Test fun clearingRequiresConfirmationResetsSessionAndCancelsOldStreamWithoutRevivingHistory() {
+        var requested by mutableStateOf(false)
+        var cancelled = 0
+        var latestHistory = emptyList<String>()
+        compose.setContent { MaterialTheme {
+            Column {
+                Text("已保存的药品和计划")
+                AssistantHeader(true) { requested = true }
+                ClearableChat(requested, { requested = false }) {
+                    var history by remember { mutableStateOf(emptyList<String>()) }
+                    var input by remember { mutableStateOf("") }
+                    var attachments by remember { mutableStateOf(emptyList<PhotoAttachment>()) }
+                    var replies by remember { mutableStateOf(emptyList<String>()) }
+                    var draft by remember { mutableStateOf(false) }
+                    SideEffect { latestHistory = history }
+                    val scope = rememberCoroutineScope()
+                    Column {
+                        Action("准备测试对话") {
+                            history = listOf("旧用户消息", "旧助手回复")
+                            input = "未发送的文字"
+                            attachments = listOf(PhotoAttachment("old-photo", Bitmap.createBitmap(8, 8, Bitmap.Config.ARGB_8888)))
+                            replies = listOf("旧推荐回复")
+                            draft = true
+                            scope.launch {
+                                try { awaitCancellation() }
+                                finally { history = history + "旧流结束后的消息"; cancelled++ }
+                            }
+                        }
+                        ChatLayout(history.size, composer = {
+                            ChatComposer(input, { input = it }, attachments, replies, false,
+                                canSend = input.isNotBlank() || attachments.isNotEmpty(), photograph = {},
+                                removePhoto = {}, voice = {}, send = {}, stop = {})
+                        }) {
+                            items(history) { Text(it) }
+                            if (draft) item { Text("未保存草稿") }
+                        }
+                    }
+                }
+            }
+        } }
+        compose.onNodeWithText("准备测试对话").performClick()
+        compose.onNodeWithContentDescription("清空对话历史").performClick()
+        compose.onNodeWithText("确认清空").assertExists()
+        compose.runOnIdle { assertEquals(0, cancelled) }
+        compose.onNodeWithText("取消").performClick()
+        compose.onNodeWithTag("chat_history").performScrollToIndex(0)
+        compose.onNodeWithText("旧用户消息").assertExists()
+        compose.onNodeWithTag("chat_input").assertTextContains("未发送的文字")
+        compose.onNodeWithText("旧推荐回复").assertExists()
+        compose.onNodeWithTag("chat_history").performScrollToIndex(2)
+        compose.onNodeWithText("未保存草稿").assertExists()
+        compose.runOnIdle { assertEquals(0, cancelled) }
+        repeat(2) { index ->
+            if (index > 0) compose.onNodeWithText("准备测试对话").performClick()
+            compose.onNodeWithContentDescription("清空对话历史").performClick()
+            compose.onNodeWithText("确认清空").performClick()
+            compose.onNodeWithText("旧用户消息").assertDoesNotExist()
+            compose.onNodeWithText("旧助手回复").assertDoesNotExist()
+            compose.onNodeWithText("旧流结束后的消息").assertDoesNotExist()
+            compose.onNodeWithText("旧推荐回复").assertDoesNotExist()
+            compose.onNodeWithText("未保存草稿").assertDoesNotExist()
+            compose.onNodeWithContentDescription("移除照片 1").assertDoesNotExist()
+            compose.onNodeWithTag("chat_input").assert(SemanticsMatcher.expectValue(SemanticsProperties.EditableText, AnnotatedString("")))
+            compose.onNodeWithContentDescription("发送").assertIsNotEnabled()
+            compose.onNodeWithText("已保存的药品和计划").assertExists()
+            compose.runOnIdle { assertEquals(index + 1, cancelled); assertFalse(requested); assertTrue(latestHistory.isEmpty()) }
+        }
+    }
+
+    @Test fun assistantIsTheMiddleTabAndPlanTabStillNavigatesToPlans() {
+        var route by mutableStateOf("chat")
+        compose.setContent { MaterialTheme { AppNavigationBar(route, false) { route = it } } }
+        val labels = listOf("今日", "药箱", "助手", "计划", "设置")
+        val centers = labels.map { compose.onNodeWithText(it).fetchSemanticsNode().boundsInRoot.center.x }
+        assertEquals(centers.sorted(), centers)
+        assertEquals((centers.first() + centers.last()) / 2, centers[2], 1f)
+        compose.onNodeWithText("助手").assertIsSelected()
+        compose.onNodeWithText("计划").performClick().assertIsSelected()
+        compose.runOnIdle { assertEquals("plans", route) }
+        compose.onNodeWithText("助手").performClick().assertIsSelected()
+        compose.runOnIdle { assertEquals("chat", route) }
+    }
+
+    @Test fun reorderedTabsKeepElderlyNavigationRestrictions() {
+        compose.setContent { MaterialTheme { AppNavigationBar("home", true) {} } }
+        compose.onNodeWithText("今日").assertExists()
+        compose.onNodeWithText("药箱").assertExists()
+        compose.onNodeWithText("设置").assertExists()
+        compose.onNodeWithText("计划").assertDoesNotExist()
+        compose.onNodeWithText("助手").assertDoesNotExist()
+    }
 
     private fun screen() {
         compose.setContent { MaterialTheme {

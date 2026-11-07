@@ -2,7 +2,7 @@ import { Hono } from 'hono';
 import { streamSSE } from 'hono/streaming';
 import { z } from 'zod';
 import { type AppEnv, type Ctx, admin, group, json, fail, limit } from './core';
-import { aiSettingsSchema, getSettings, getApiKey, requestApiKey, apiKeyStatements } from './ai-config';
+import { aiSettingsSchema, getSettings, getApiKey, requestApiKey, apiKeyStatements, settingsState } from './ai-config';
 import { connectionId } from '../shared/ai';
 import { listModels, nativeSearch, probeNativeSearch, searchProbeQuery } from './ai-native-search';
 import { complete, tavily, duckduckgo, parseModelJson, tool, publicUrl, type Message } from './ai-http';
@@ -25,8 +25,7 @@ export const ai = new Hono<AppEnv>();export async function quota(c: Ctx, g: Fami
 }
 ai.get('/ai/settings', async c => {
   admin(c);
-  const keys = await c.env.DB.prepare("SELECT key FROM app_settings WHERE key IN ('key:llm','key:tavily')").all<{ key: string }>();
-  return c.json({ settings: await getSettings(c.env), has_llm_key: keys.results.some(k => k.key === 'key:llm'), has_tavily_key: keys.results.some(k => k.key === 'key:tavily') });
+  return c.json(await settingsState(c.env));
 });
 ai.put('/ai/settings', async c => {
   admin(c);
@@ -43,7 +42,7 @@ ai.put('/ai/settings', async c => {
   if (d.llm_key?.trim()) statements.push(...await apiKeyStatements(c.env, 'llm', d.llm_key.trim(), d.settings));
   if (d.tavily_key?.trim()) statements.push(...await apiKeyStatements(c.env, 'tavily', d.tavily_key.trim()));
   await c.env.DB.batch(statements);
-  return c.json({ ok: true });
+  return c.json({ ok: true, ...await settingsState(c.env) });
 });
 const providerDraft = z.object({ settings: aiSettingsSchema, llm_key: z.string().max(1000).optional() });
 ai.post('/ai/models', async c => {

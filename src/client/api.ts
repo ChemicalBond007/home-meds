@@ -2,14 +2,18 @@ import { isApp } from './native';
 const client = (): Record<string, string> => isApp() ? { 'X-HomeMeds-Client': 'android' } : {};
 export let selectedGroup = localStorage.getItem('home-meds-group') || '';
 export function selectGroup(id: string) { selectedGroup = id; localStorage.setItem('home-meds-group', id); }
-export async function api<T>(path: string, method = 'GET', body?: unknown): Promise<T> {
+export class ApiError extends Error {
+  constructor(message: string, readonly status: number) { super(message); }
+}
+export async function api<T>(path: string, method = 'GET', body?: unknown, options?: { state?: 'admin'; signal?: AbortSignal }): Promise<T> {
   const response = await fetch(`/api${path}`, {
-    method, credentials: 'same-origin',
-    headers: { ...(body !== undefined ? { 'Content-Type': 'application/json' } : {}), ...(selectedGroup ? { 'X-Group-Id': selectedGroup } : {}), ...client() },
+    method, credentials: 'same-origin', signal: options?.signal,
+    headers: { ...(body !== undefined ? { 'Content-Type': 'application/json' } : {}), ...(selectedGroup ? { 'X-Group-Id': selectedGroup } : {}), ...client(),
+      ...(options?.state ? { 'X-HomeMeds-State': options.state } : {}) },
     body: body !== undefined ? JSON.stringify(body) : undefined,
   });
   const data = await response.json() as T & { error?: string };
-  if (!response.ok) throw new Error(data.error || '请求失败');
+  if (!response.ok) throw new ApiError(data.error || '请求失败', response.status);
   return data;
 }
 export async function sse(path: string, body: unknown, onEvent: (event: string, data: unknown) => void, signal?: AbortSignal) {
