@@ -28,6 +28,7 @@ data class DoseRequest(val plan: Plan, val date: String, val time: String)
 val LocalSpeak = staticCompositionLocalOf<(String) -> Unit> { {} }
 val LocalCalendarPermission = staticCompositionLocalOf<() -> Unit> { {} }
 val LocalNotificationPermission = staticCompositionLocalOf<() -> Unit> { {} }
+internal fun appTitle(route: String) = if (route == "chat") "赛博药箱AI助手" else "赛博药箱"
 
 class MainActivity : ComponentActivity() {
     private var target by mutableStateOf<NotificationTarget?>(null)
@@ -101,8 +102,8 @@ class MainActivity : ComponentActivity() {
     Scaffold(containerColor = Cream, topBar = {
         if (state.user != null && !state.bindingOnly) Column(Modifier.padding(horizontal = 16.dp, vertical = 8.dp).statusBarsPadding()) {
             Row {
-                Text("家药箱", Modifier.weight(1f), style = MaterialTheme.typography.titleLarge)
-                Action("朗读", secondary = true) { speak("今天 ${state.today}。" + state.todos.filter { it.plan.userId == state.user.id }.joinToString("。") { "${it.time} ${it.plan.medicineName} ${Texts.amount(it.plan.amount)}${it.plan.unit}，${stateLabel(it.state)}" }) }
+                Text(appTitle(route), Modifier.weight(1f), style = MaterialTheme.typography.titleLarge)
+                if (route != "chat") Action("朗读", secondary = true) { speak("今天 ${state.today}。" + state.todos.filter { it.plan.userId == state.user.id }.joinToString("。") { "${it.time} ${it.plan.medicineName} ${Texts.amount(it.plan.amount)}${it.plan.unit}，${stateLabel(it.state)}" }) }
             }
             if (state.user.admin) Picker("当前家庭", state.groupId, state.groups.map { it.id to it.name }, vm::selectGroup, !state.busy)
             else Text("${state.groups.find { it.id == state.groupId }?.name.orEmpty()} · ${state.user.username}", color = Muted)
@@ -119,7 +120,7 @@ class MainActivity : ComponentActivity() {
         Column(Modifier.fillMaxSize().padding(padding)) {
             if (state.busy || state.loading) LinearProgressIndicator(Modifier.fillMaxWidth(), color = Green)
             state.error?.let { Row(Modifier.fillMaxWidth().padding(12.dp)) {
-                Text(it, Modifier.weight(1f), color = Red)
+                Text(it, Modifier.weight(1f), color = if (route == "chat") Muted else Red)
                 Action("关闭", secondary = true) { vm.error(null) }
             } }
             state.notice?.let { Row(Modifier.fillMaxWidth().padding(12.dp)) {

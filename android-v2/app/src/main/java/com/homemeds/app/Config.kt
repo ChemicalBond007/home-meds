@@ -57,6 +57,18 @@ class Prefs(context: Context) {
         get() = p.getBoolean("app_notifications", true)
         set(v) = p.edit { putBoolean("app_notifications", v) }
 
+    var assistantPhone: Boolean
+        get() = p.getBoolean("assistant_phone", true)
+        set(v) = p.edit { putBoolean("assistant_phone", v) }
+
+    fun assistantTarget(userId: String, groupId: String): String? =
+        p.getString("assistant_target:$userId:$groupId", null)
+
+    fun setAssistantTarget(userId: String, groupId: String, target: String?) = p.edit {
+        val key = "assistant_target:$userId:$groupId"
+        if (target == null) remove(key) else putString(key, target)
+    }
+
     var lastSync: Long?
         get() = p.getLong("last_sync", 0).takeIf { it > 0 }
         set(v) = p.edit { putLong("last_sync", v ?: 0) }

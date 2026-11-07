@@ -100,6 +100,8 @@ class CalendarPlannerTest {
         assertEquals(Instant.parse("2026-01-01T00:00:00Z").toEpochMilli(), events[0].start)
         assertTrue(events[0].description.contains("饭后"))
         assertTrue(events[0].description.contains("不代表已经服药"))
+        assertTrue(events[0].description.contains("赛博药箱"))
+        assertFalse(events[0].description.contains("家药箱"))
     }
 
     @Test

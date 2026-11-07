@@ -32,7 +32,7 @@ import org.json.JSONObject
     var recovery by remember { mutableStateOf(false) }
     var joinCode by remember { mutableStateOf("") }
     var elderly by remember { mutableStateOf(false) }
-    Page("家药箱 2.0") {
+    Page("赛博药箱") {
         Text("把家人的用药，记在一起。", style = MaterialTheme.typography.titleLarge)
         Text("原生 Android · 本地日历 · 到点提醒", color = Muted)
         Panel {
@@ -56,7 +56,7 @@ import org.json.JSONObject
                 credential = ""
             }
         }
-        Text("成员账号遵循现有服务端登录规则。管理员凭证仅发送至家药箱 API。", color = Muted)
+        Text("成员账号遵循现有服务端登录规则。管理员凭证仅发送至赛博药箱 API。", color = Muted)
     }
 }
 
@@ -114,7 +114,7 @@ import org.json.JSONObject
             try {
                 withContext(Dispatchers.IO) {
                     val stream = context.contentResolver.openOutputStream(uri) ?: throw UserError("无法保存文件")
-                    stream.bufferedWriter().use { it.write("家药箱恢复码，仅显示一次，请离线妥善保存。\n\n" + codes.joinToString("\n")) }
+                    stream.bufferedWriter().use { it.write("赛博药箱恢复码，仅显示一次，请离线妥善保存。\n\n" + codes.joinToString("\n")) }
                 }
                 saved = true
             } catch (_: Exception) { error = "恢复码保存失败，请重试或手动抄写" }
@@ -123,7 +123,7 @@ import org.json.JSONObject
     Modal("请离线保存恢复码", {}) {
         Text("恢复码仅显示一次，每个只能使用一次。重新生成后旧码全部失效。不要发给他人。", color = Red)
         SelectionContainer { Text(codes.mapIndexed { i, s -> "${i + 1}. $s" }.joinToString("\n")) }
-        Action("保存到文件") { save.launch("home-meds-recovery.txt") }
+        Action("保存到文件") { save.launch("cyber-meds-recovery.txt") }
         Check("我已离线保存或抄写全部恢复码", saved, { saved = it })
         error?.let { Text(it, color = Red) }
         Action("保存好了，继续", enabled = saved, onClick = done)

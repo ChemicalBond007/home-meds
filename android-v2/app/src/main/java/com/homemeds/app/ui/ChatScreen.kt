@@ -5,8 +5,30 @@ import android.content.Intent
 import android.speech.RecognizerIntent
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.Image
+import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.lazy.*
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.BasicTextField
+import androidx.compose.foundation.text.KeyboardActions
+import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.Send
+import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.Mic
+import androidx.compose.material.icons.filled.PhotoCamera
+import androidx.compose.material.icons.filled.Stop
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.text.input.ImeAction
+import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.dp
 import com.homemeds.app.*
 import com.homemeds.app.net.AiAgent
 import kotlinx.coroutines.*
@@ -14,7 +36,9 @@ import org.json.JSONArray
 import org.json.JSONObject
 import java.util.UUID
 
-data class ChatMessage(val role: String, val content: String)
+data class ChatMessage(val role: String, val content: String, val imageDataUrls: List<String> = emptyList()) {
+    override fun toString() = "ChatMessage($role)"
+}
 data class Proposal(val id: String, val operation: String, val planId: String?, val draft: JSONObject)
 fun parseProposal(o: JSONObject, target: String): Proposal {
     val op = o.getString("operation")
@@ -32,13 +56,23 @@ fun parseProposal(o: JSONObject, target: String): Proposal {
 }
 
 @Composable fun ChatScreen(vm: AppViewModel, state: AppState) {
-    var target by remember { mutableStateOf(state.user?.id.orEmpty()) }
+    val target = assistantTarget(state)
+    key(state.user?.id, state.groupId, target, state.assistantPhone) {
+        ChatConversation(vm, state, target)
+    }
+}
+
+@Composable private fun ChatConversation(vm: AppViewModel, state: AppState, target: String?) {
     var text by remember { mutableStateOf("") }
     var messages by remember { mutableStateOf<List<ChatMessage>>(emptyList()) }
     var proposals by remember { mutableStateOf<List<Proposal>>(emptyList()) }
+    var medicineDrafts by remember { mutableStateOf<List<JSONObject>>(emptyList()) }
+    var intake by remember { mutableStateOf<JSONObject?>(null) }
+    var photoDialog by remember { mutableStateOf(false) }
+    var photos by remember { mutableStateOf<List<PhotoAttachment>>(emptyList()) }
     var editor by remember { mutableStateOf<Proposal?>(null) }
     var pause by remember { mutableStateOf<Proposal?>(null) }
-    var phone by remember { mutableStateOf(true) }
+    var suggestions by remember { mutableStateOf<List<String>>(emptyList()) }
     var stream by remember { mutableStateOf<Job?>(null) }
     var running by remember { mutableStateOf(false) }
     var partial by remember { mutableStateOf("") }
@@ -48,65 +82,88 @@ fun parseProposal(o: JSONObject, target: String): Proposal {
     val voice = rememberLauncherForActivityResult(ActivityResultContracts.StartActivityForResult()) { result ->
         if (result.resultCode == Activity.RESULT_OK) result.data?.getStringArrayListExtra(RecognizerIntent.EXTRA_RESULTS)?.firstOrNull()?.let { text = it.take(6000) }
     }
-    fun send(intent: String) {
-        val prompt = text.trim().ifBlank { if (intent == "draft") "请根据刚才已明确的信息生成待确认草稿，缺少信息请追问。" else "" }
-        if (running || prompt.isBlank()) return
-        text = ""; error = null; partial = ""; running = true
-        messages = (messages + ChatMessage("user", prompt.take(6000))).takeLast(19)
+    fun send() {
+        val prompt = text.trim().ifBlank {
+            if (photos.isNotEmpty()) "请综合这些照片中同一药盒的各个角度识别药品并生成待确认入库草稿"
+            else ""
+        }
+        if (running || target == null || state.groupId == null || prompt.isBlank()) return
+        text = ""; error = null; partial = ""; suggestions = emptyList(); running = true
+        messages = (messages + ChatMessage("user", prompt.take(6000), photos.map { it.dataUrl })).takeLast(19)
+        photos = emptyList()
         val history = messages
         stream = scope.launch {
             try {
-                AiAgent.runChat(json("user_id" to target, "intent" to intent,
-                    "messages" to JSONArray(history.map { json("role" to it.role, "content" to it.content.take(6000)) })), state.groupId, phone) { event, data ->
+                AiAgent.runChat(json("user_id" to target, "intent" to "chat",
+                    "messages" to JSONArray(history.map {
+                        if (it.role == "user") AiAgent.userMessage(it.content.take(6000), it.imageDataUrls)
+                        else json("role" to it.role, "content" to it.content.take(6000))
+                    })), state.groupId, state.assistantPhone) { event, data ->
                     withContext(Dispatchers.Main) {
                         when (event) {
                             "delta" -> partial += data.toString()
+                            "suggestions" -> suggestions = (data as JSONArray).strings()
                             "draft" -> try {
                                 val proposal = parseProposal(data as JSONObject, target)
                                 if (proposals.none { it.id == proposal.id }) proposals = proposals + proposal
                             } catch (e: Exception) { error = e.message ?: "草稿不完整，未加入列表" }
                             "draft_error" -> error = (data as? JSONObject)?.optString("message")
+                            "medicine_draft" -> {
+                                val draft = data as JSONObject
+                                if (medicineDrafts.none { it.optString("draft_id") == draft.getString("draft_id") })
+                                    medicineDrafts = medicineDrafts + draft
+                            }
                         }
                     }
                 }
-            } catch (e: CancellationException) { error = "已取消，草稿尚未保存"; throw e }
-            catch (e: Exception) { error = e.message ?: "对话失败，请重试" }
+            } catch (e: CancellationException) { suggestions = emptyList(); error = "已取消，草稿尚未保存"; throw e }
+            catch (e: Exception) { suggestions = emptyList(); error = e.message ?: "对话失败，请重试" }
             finally {
                 if (partial.isNotBlank()) messages = (messages + ChatMessage("assistant", partial.take(6000))).takeLast(20)
                 partial = ""; running = false
             }
         }
     }
-    Page("AI 计划记录助手") {
-        Panel {
-            Text("只整理已有医嘱，不提供用药建议。所有计划必须由你核对卡片后保存。", color = Red)
-            Picker("计划对象", target, state.members.map { it.id to it.username }, {
-                target = it; messages = emptyList(); proposals = emptyList(); partial = ""
-            }, enabled = !running)
-            Check("手机直接连接模型（设备加密凭据）", phone, { phone = it }, enabled = !running)
-            if (!phone) Text("使用家药箱服务端 SSE，不会加载网页。")
+    ChatLayout(revision = "${messages.size}:${partial.length}:${medicineDrafts.size}:${proposals.size}", composer = {
+        ChatComposer(text, { text = it.take(6000) }, photos, suggestions, running,
+            canSend = target != null && state.groupId != null && (text.isNotBlank() || photos.isNotEmpty()),
+            photograph = { photoDialog = true },
+            removePhoto = { index -> photos = photos.filterIndexed { i, _ -> i != index } },
+            voice = {
+                runCatching { voice.launch(Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH)
+                    .putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
+                    .putExtra(RecognizerIntent.EXTRA_LANGUAGE, "zh-CN").putExtra(RecognizerIntent.EXTRA_PROMPT, "请说药名、用量和服药时间")) }
+                    .onFailure { error = "手机未安装语音识别服务，请使用文字输入" }
+            }, send = ::send, stop = { stream?.cancel() })
+    }) {
+        if (target == null) item { Text("请在设置 → 助手偏好中选择计划对象。", color = Muted) }
+        if (messages.isEmpty() && partial.isEmpty()) item {
+            Text("可以发送文字或拍摄药盒的多个角度，助手会在信息充分时生成待确认草稿。", color = Muted)
         }
-        messages.forEach { msg -> Panel(if (msg.role == "user") "你" else "记录助手") {
+        items(messages) { msg -> Panel(if (msg.role == "user") "你" else "AI助手") {
             Text(msg.content)
+            if (msg.imageDataUrls.isNotEmpty()) Text("[已附 ${msg.imageDataUrls.size} 张药品图片]", color = Muted)
             if (msg.role == "assistant") Action("朗读", secondary = true) { speak(msg.content) }
         } }
-        if (partial.isNotEmpty()) Panel("助手正在回复") { Text(partial) }
-        error?.let { Text(it, color = Red) }
-        Field("告诉助手：谁、什么药、用量、时间", text, { text = it.take(6000) }, multiline = true, enabled = !running)
-        Action("中文语音输入", secondary = true, enabled = !running) {
-            runCatching { voice.launch(Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH)
-                .putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
-                .putExtra(RecognizerIntent.EXTRA_LANGUAGE, "zh-CN").putExtra(RecognizerIntent.EXTRA_PROMPT, "请说药名、用量和服药时间")) }
-                .onFailure { error = "手机未安装语音识别服务，请使用文字输入" }
+        if (partial.isNotEmpty()) item { Panel("助手正在回复") { Text(partial) } }
+        error?.let { message -> item { Text(message, color = Muted) } }
+        if (medicineDrafts.isNotEmpty()) item { Text("待确认的药品（${medicineDrafts.size}）", style = MaterialTheme.typography.titleMedium) }
+        items(medicineDrafts) { draft ->
+            Panel(draft.optString("name"), warning = true) {
+                listOf("specification" to "规格", "manufacturer" to "厂家", "units_per_package" to "每盒数量",
+                    "expiry_date" to "有效期", "batch_number" to "批号", "code" to "条码 / 追溯码").forEach { (key, label) ->
+                    if (!draft.isNull(key)) Text("$label：${draft.get(key)}")
+                }
+                Text("尚未入库，请逐项核对实物。")
+                Sources(parseSources(draft.opt("sources")))
+                Action("打开核对并入库", enabled = !running && !state.busy) { intake = draft }
+                Action("丢弃草稿", secondary = true, enabled = !running) {
+                    medicineDrafts = medicineDrafts.filterNot { it.optString("draft_id") == draft.optString("draft_id") }
+                }
+            }
         }
-        listOf("请先列出我的已有计划", "请帮我查找家里的药品", "请问还缺少什么信息？").forEach { reply ->
-            Action(reply, secondary = true, enabled = !running) { text = reply }
-        }
-        Action("发送", enabled = !running && target.isNotBlank() && text.isNotBlank()) { send("chat") }
-        Action("生成待确认草稿", secondary = true, enabled = !running && target.isNotBlank() && (text.isNotBlank() || messages.isNotEmpty())) { send("draft") }
-        if (running) Action("停止回复", secondary = true) { stream?.cancel() }
-        Text("待确认的计划（${proposals.size}）", style = MaterialTheme.typography.titleMedium)
-        proposals.forEach { p ->
+        if (proposals.isNotEmpty()) item { Text("待确认的计划（${proposals.size}）", style = MaterialTheme.typography.titleMedium) }
+        items(proposals) { p ->
             Panel(when (p.operation) { "pause" -> "待确认暂停"; "update" -> "待确认修改"; else -> "待确认新增" }, warning = true) {
                 Text(p.draft.getString("medicine_name"), style = MaterialTheme.typography.titleMedium)
                 Text("${p.draft.get("amount")} ${p.draft.getString("unit")} · ${p.draft.getJSONArray("times").strings().joinToString(" / ")}")
@@ -116,6 +173,12 @@ fun parseProposal(o: JSONObject, target: String): Proposal {
             }
         }
     }
+    if (photoDialog) PhotoCaptureDialog({ photoDialog = false }, initialPhotos = photos) { photos = it; photoDialog = false }
+    intake?.let { draft ->
+        IntakeDialog(vm, state, initialDraft = draft, onSaved = {
+            medicineDrafts = medicineDrafts.filterNot { it.optString("draft_id") == draft.optString("draft_id") }
+        }) { intake = null }
+    }
     editor?.let { p -> PlanEditor(state, p.draft, { editor = null }) { body ->
         vm.save(if (p.operation == "create") "POST" else "PUT", "/plans" + (p.planId?.let { "/$it" } ?: ""), body) {
             proposals = proposals.filterNot { it.id == p.id }; editor = null
@@ -124,4 +187,74 @@ fun parseProposal(o: JSONObject, target: String): Proposal {
     pause?.let { p -> Confirm("确认暂停正式计划", "暂停 ${p.draft.getString("medicine_name")}？此操作会更新日历与提醒。", { pause = null }) {
         vm.save("DELETE", "/plans/${p.planId}") { proposals = proposals.filterNot { it.id == p.id }; pause = null }
     } }
+}
+
+@Composable internal fun ChatLayout(revision: Any, composer: @Composable ColumnScope.() -> Unit, content: LazyListScope.() -> Unit) {
+    val scroll = rememberLazyListState()
+    LaunchedEffect(revision) {
+        val count = scroll.layoutInfo.totalItemsCount
+        if (count > 0 && (scroll.layoutInfo.visibleItemsInfo.lastOrNull()?.index ?: 0) >= count - 2)
+            scroll.scrollToItem(count - 1)
+    }
+    Column(Modifier.fillMaxSize().imePadding()) {
+        LazyColumn(Modifier.weight(1f).fillMaxWidth().testTag("chat_history"), state = scroll,
+            contentPadding = PaddingValues(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp), content = content)
+        Column(Modifier.fillMaxWidth(), content = composer)
+    }
+}
+
+@Composable internal fun ChatComposer(
+    text: String, change: (String) -> Unit, photos: List<PhotoAttachment>, suggestions: List<String>,
+    running: Boolean, canSend: Boolean, photograph: () -> Unit, removePhoto: (Int) -> Unit,
+    voice: () -> Unit, send: () -> Unit, stop: () -> Unit,
+) {
+    Surface(Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 8.dp).testTag("chat_composer"),
+        shape = RoundedCornerShape(20.dp), border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant)) {
+        BoxWithConstraints {
+            val lineHeight = with(LocalDensity.current) { MaterialTheme.typography.bodyLarge.lineHeight.toDp() }
+            val expandedHeight = lineHeight * 2 + 24.dp + touchHeight + 8.dp +
+                (if (photos.isNotEmpty()) 96.dp else 0.dp) + (if (suggestions.isNotEmpty()) touchHeight else 0.dp)
+            val compact = maxHeight < expandedHeight
+            Column {
+                if (suggestions.isNotEmpty()) LazyRow(Modifier.fillMaxWidth().testTag("reply_suggestions"),
+                    contentPadding = PaddingValues(horizontal = 12.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    items(suggestions) { reply ->
+                        SuggestionChip(onClick = { change(reply) }, enabled = !running,
+                            label = { Text(reply, Modifier.widthIn(max = 260.dp), maxLines = 1, overflow = TextOverflow.Ellipsis) })
+                    }
+                }
+                // Collapse previews, not attachments, when the keyboard leaves little room.
+                if (photos.isNotEmpty() && !compact) LazyRow(contentPadding = PaddingValues(horizontal = 12.dp, vertical = 8.dp),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    items(photos.size) { index ->
+                        Box {
+                            Image(photos[index].preview.asImageBitmap(), "药品照片 ${index + 1}", Modifier.size(80.dp))
+                            IconButton({ removePhoto(index) }, Modifier.align(Alignment.TopEnd), enabled = !running) {
+                                Icon(Icons.Default.Close, "移除照片 ${index + 1}")
+                            }
+                        }
+                    }
+                }
+                BasicTextField(text, change, enabled = !running,
+                    modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 12.dp).testTag("chat_input"),
+                    minLines = if (compact) 1 else 2, maxLines = if (compact) 2 else 4, textStyle = MaterialTheme.typography.bodyLarge.copy(color = Ink),
+                    keyboardOptions = KeyboardOptions(imeAction = ImeAction.Send),
+                    keyboardActions = KeyboardActions(onSend = { if (!running && canSend) send() }),
+                    decorationBox = { field ->
+                        Box {
+                            if (text.isEmpty()) Text("输入消息，或拍照识别药品", color = Muted)
+                            field()
+                        }
+                    })
+                Row(Modifier.fillMaxWidth().padding(horizontal = 8.dp, vertical = 4.dp), verticalAlignment = Alignment.CenterVertically) {
+                    IconButton(photograph, Modifier.size(touchHeight), enabled = !running) { Icon(Icons.Default.PhotoCamera, "拍照或选择照片") }
+                    if (photos.isNotEmpty()) Text("${photos.size} / $MAX_MEDICINE_PHOTOS", color = Muted, style = MaterialTheme.typography.bodySmall)
+                    Spacer(Modifier.weight(1f))
+                    IconButton(voice, Modifier.size(touchHeight), enabled = !running) { Icon(Icons.Default.Mic, "语音输入") }
+                    if (running) FilledIconButton(stop, Modifier.size(touchHeight)) { Icon(Icons.Default.Stop, "停止回复") }
+                    else FilledIconButton(send, Modifier.size(touchHeight), enabled = canSend) { Icon(Icons.AutoMirrored.Filled.Send, "发送") }
+                }
+            }
+        }
+    }
 }

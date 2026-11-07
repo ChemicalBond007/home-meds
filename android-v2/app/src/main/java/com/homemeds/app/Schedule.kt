@@ -122,7 +122,7 @@ object CalendarPlanner {
         append("用量：").append(Texts.amount(plan.amount)).append(plan.unit)
         Texts.meal(plan.mealRelation).takeIf { it.isNotEmpty() }?.let { append("，").append(it) }
         if (plan.notes.isNotBlank()) append("\n备注：").append(plan.notes.trim())
-        append("\n请打开家药箱核对时间、用量和药盒后确认。日历提醒不代表已经服药。")
+        append("\n请打开赛博药箱核对时间、用量和药盒后确认。日历提醒不代表已经服药。")
     }
 }
 

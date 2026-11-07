@@ -111,7 +111,7 @@ object Sealed {
     private val oaep = OAEPParameterSpec("SHA-1", "MGF1", MGF1ParameterSpec.SHA1, PSource.PSpecified.DEFAULT)
 
     fun open(privateKey: PrivateKey, sealed: JSONObject): String {
-        if (sealed.optString("alg") != ALG) throw UserError("服务器返回的凭据格式不受支持，请更新家药箱")
+        if (sealed.optString("alg") != ALG) throw UserError("服务器返回的凭据格式不受支持，请更新赛博药箱")
         val b64 = Base64.getDecoder()
         val rsa = Cipher.getInstance("RSA/ECB/OAEPWithSHA-1AndMGF1Padding").apply { init(Cipher.DECRYPT_MODE, privateKey, oaep) }
         val raw = rsa.doFinal(b64.decode(sealed.getString("wrapped_key")))

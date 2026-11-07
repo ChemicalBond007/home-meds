@@ -15,18 +15,19 @@ import androidx.core.content.ContextCompat
 import java.time.ZoneId
 
 /**
- * Keeps a local, phone-only calendar named 家药箱 in step with the plans. Events
+ * Keeps a local, phone-only calendar named 赛博药箱 in step with the plans. Events
  * are matched by SYNC_DATA1 (plan|time) and replaced when their fingerprint changes.
  */
 object CalendarSync {
-    private const val ACCOUNT = "家药箱"
+    private const val ACCOUNT = "赛博药箱"
+    private const val LEGACY_ACCOUNT = "家药箱"
 
     fun hasPermission(context: Context) = listOf(Manifest.permission.READ_CALENDAR, Manifest.permission.WRITE_CALENDAR)
         .all { ContextCompat.checkSelfPermission(context, it) == PackageManager.PERMISSION_GRANTED }
 
-    private fun Uri.asSyncAdapter(): Uri = buildUpon()
+    private fun Uri.asSyncAdapter(account: String = ACCOUNT): Uri = buildUpon()
         .appendQueryParameter(CalendarContract.CALLER_IS_SYNCADAPTER, "true")
-        .appendQueryParameter(Calendars.ACCOUNT_NAME, ACCOUNT)
+        .appendQueryParameter(Calendars.ACCOUNT_NAME, account)
         .appendQueryParameter(Calendars.ACCOUNT_TYPE, CalendarContract.ACCOUNT_TYPE_LOCAL)
         .build()
 
@@ -49,13 +50,15 @@ object CalendarSync {
             put(Calendars.CALENDAR_TIME_ZONE, zone.id)
             put(Calendars.ALLOWED_REMINDERS, Reminders.METHOD_ALERT.toString())
         }
-        val uri = cr.insert(Calendars.CONTENT_URI.asSyncAdapter(), values) ?: throw UserError("无法创建“家药箱”日历")
+        val uri = cr.insert(Calendars.CONTENT_URI.asSyncAdapter(), values) ?: throw UserError("无法创建“赛博药箱”日历")
         return ContentUris.parseId(uri)
     }
 
     /** Returns the number of recurring events now in the calendar. */
     fun sync(context: Context, specs: List<EventSpec>, zone: ZoneId): Int {
+        if (!hasPermission(context)) return 0
         val cr = context.contentResolver
+        deleteAccount(cr, LEGACY_ACCOUNT)
         val calendar = find(cr) ?: if (specs.isEmpty()) return 0 else create(cr, zone)
         val desired = specs.associateBy { it.key }
         val kept = mutableSetOf<String>()
@@ -98,6 +101,16 @@ object CalendarSync {
     fun deleteAll(context: Context) {
         if (!hasPermission(context)) return
         val cr = context.contentResolver
-        find(cr)?.let { cr.delete(ContentUris.withAppendedId(Calendars.CONTENT_URI, it).asSyncAdapter(), null, null) }
+        deleteAccount(cr, ACCOUNT)
+        deleteAccount(cr, LEGACY_ACCOUNT)
+    }
+
+    private fun deleteAccount(cr: ContentResolver, account: String) {
+        val ids = cr.query(Calendars.CONTENT_URI, arrayOf(Calendars._ID),
+            "${Calendars.ACCOUNT_NAME}=? AND ${Calendars.ACCOUNT_TYPE}=?",
+            arrayOf(account, CalendarContract.ACCOUNT_TYPE_LOCAL), null)?.use { cursor ->
+            buildList { while (cursor.moveToNext()) add(cursor.getLong(0)) }
+        }.orEmpty()
+        ids.forEach { cr.delete(ContentUris.withAppendedId(Calendars.CONTENT_URI, it).asSyncAdapter(account), null, null) }
     }
 }

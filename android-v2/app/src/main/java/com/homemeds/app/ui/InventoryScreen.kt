@@ -154,7 +154,29 @@ private val productFields = listOf(
     }
 }
 
-@Composable fun IntakeDialog(vm: AppViewModel, state: AppState, initialCode: String = "", dismiss: () -> Unit) {
+/** Exact, unambiguous name/spec/manufacturer matching only; never pick an arbitrary variant. */
+internal fun matchMedicineDraft(draft: JSONObject, products: List<Product>): Product? {
+    val name = draft.nullable("name")?.trim()?.takeIf(String::isNotBlank) ?: return null
+    return products.filter { p ->
+        p.name.trim().equals(name, true) && listOf("specification", "manufacturer").all { key ->
+            val value = draft.nullable(key)?.trim().orEmpty()
+            value.isEmpty() || p.data.nullable(key)?.trim().equals(value, true)
+        }
+    }.singleOrNull()
+}
+
+internal data class IntakeDraftSeed(val product: Product?, val code: String, val expiry: String, val batch: String, val size: String)
+internal fun prepareIntakeDraft(draft: JSONObject, products: List<Product>): IntakeDraftSeed {
+    val product = matchMedicineDraft(draft, products)
+    val code = draft.nullable("code").orEmpty()
+    val parsed = parseCode(code)
+    return IntakeDraftSeed(product, code, draft.nullable("expiry_date") ?: parsed.expiryDate.orEmpty(),
+        draft.nullable("batch_number") ?: parsed.batchNumber.orEmpty(),
+        if (!draft.isNull("units_per_package")) draft.get("units_per_package").toString() else product?.size?.let(Texts::amount).orEmpty())
+}
+
+@Composable fun IntakeDialog(vm: AppViewModel, state: AppState, initialCode: String = "", initialDraft: JSONObject? = null,
+    onSaved: () -> Unit = {}, dismiss: () -> Unit) {
     var code by remember { mutableStateOf(initialCode) }
     var scan by remember { mutableStateOf(false) }
     var product by remember { mutableStateOf("") }
@@ -163,6 +185,7 @@ private val productFields = listOf(
     var query by remember { mutableStateOf("") }
     var progress by remember { mutableStateOf("") }
     var lookup by remember { mutableStateOf<Job?>(null) }
+    var looking by remember { mutableStateOf(false) }
     var warehouse by remember { mutableStateOf(state.warehouses.firstOrNull()?.optString("id").orEmpty()) }
     var expiry by remember { mutableStateOf(parseCode(initialCode).expiryDate.orEmpty()) }
     var batch by remember { mutableStateOf(parseCode(initialCode).batchNumber.orEmpty()) }
@@ -170,7 +193,38 @@ private val productFields = listOf(
     var packages by remember { mutableStateOf("1") }
     var checked by remember { mutableStateOf(false) }
     var error by remember { mutableStateOf<String?>(null) }
+    var photoDialog by remember { mutableStateOf(false) }
+    var photos by remember { mutableStateOf<List<PhotoAttachment>>(emptyList()) }
+    var recognized by remember { mutableStateOf<JSONObject?>(null) }
+    var advanceAfterCreate by remember { mutableStateOf(false) }
     val scope = rememberCoroutineScope()
+    fun applyDraft(draft: JSONObject) {
+        recognized = JSONObject(draft.toString()).put("status", "pending")
+        val seed = prepareIntakeDraft(draft, state.products)
+        code = seed.code; expiry = seed.expiry; batch = seed.batch; size = seed.size
+        checked = false
+        if (seed.product != null) {
+            product = seed.product.id
+            advanceAfterCreate = false
+        } else {
+            product = ""; advanceAfterCreate = true; newProduct = recognized
+        }
+    }
+    fun lookupMedicine(images: List<PhotoAttachment> = emptyList()) {
+        if (looking) return
+        error = null; looking = true; photos = images.toList()
+        lookup = scope.launch {
+            try {
+                AiAgent.runLookup(query.trim().ifBlank { "请识别图中药品容器信息" }.take(500), state.groupId,
+                    imageDataUrls = images.map { it.dataUrl }) { event, data -> withContext(Dispatchers.Main) {
+                    if (event == "progress") progress = data.toString()
+                    if (event == "result") applyDraft(data as JSONObject)
+                } }
+            } catch (e: CancellationException) { throw e }
+            catch (e: Exception) { error = e.message ?: "AI 查询失败，请手动填写" }
+            finally { progress = ""; looking = false }
+        }
+    }
     suspend fun resolve(raw: String) {
         val data = vm.get("/codes/resolve?code=" + URLEncoder.encode(raw, "UTF-8"))
         val parsed = parseCode(raw)
@@ -179,36 +233,37 @@ private val productFields = listOf(
         data.optJSONObject("product")?.let { product = it.getString("id"); size = it.get("units_per_package").toString() }
         data.optJSONObject("cache")?.let { newProduct = it }
     }
-    LaunchedEffect(initialCode) { if (initialCode.isNotBlank()) try { resolve(initialCode) } catch (e: CancellationException) { throw e } catch (_: Exception) { error = "条码解析失败，可重试或手动录入" } }
+    LaunchedEffect(Unit) {
+        if (initialDraft != null) applyDraft(initialDraft)
+        else if (initialCode.isNotBlank()) try { resolve(initialCode) }
+        catch (e: CancellationException) { throw e }
+        catch (_: Exception) { error = "条码解析失败，可重试或手动录入" }
+    }
     Modal("药品入库 · 第 $step 步", dismiss) {
         if (step == 1) {
-            Field("条码或追溯码（可留空手工入库）", code, { code = it; checked = false })
-            Action("相机扫码", secondary = true) { scan = true }
-            Action("查询条码", secondary = true, enabled = !state.busy && code.isNotBlank()) { vm.perform { resolve(code) } }
+            Field("条码或追溯码（可留空手工入库）", code, { code = it; checked = false }, enabled = !looking && !state.busy)
+            Action("相机扫码", secondary = true, enabled = !looking && !state.busy) { scan = true }
+            Action("拍药品容器添加药品", secondary = true, enabled = !looking && !state.busy) { photoDialog = true }
+            if (photos.isNotEmpty()) Text("本次识药已附 ${photos.size} 张多角度照片，可重新打开拍照入口补拍或移除。")
+            Action("查询条码", secondary = true, enabled = !looking && !state.busy && code.isNotBlank()) { vm.perform { resolve(code) } }
             Picker("选择已有药品", product, listOf("" to "请选择") + state.products.map { it.id to it.name }, {
                 product = it; size = state.products.find { p -> p.id == it }?.size?.let(Texts::amount).orEmpty()
-            })
-            Action("新建药品资料", secondary = true) { newProduct = JSONObject() }
-            Field("AI 检索药名 / 厂家 / 条码", query, { query = it })
-            Text("AI 只预填公开资料，必须逐项核对后保存。", color = Red)
-            Action("AI 检索预填", enabled = lookup?.isActive != true && query.isNotBlank()) {
-                lookup = scope.launch {
-                    try {
-                        AiAgent.runLookup(query.trim().take(500), state.groupId) { event, data -> withContext(Dispatchers.Main) {
-                            if (event == "progress") progress = data.toString()
-                            if (event == "result") newProduct = (data as JSONObject).put("status", "pending")
-                        } }
-                    } catch (e: CancellationException) { throw e }
-                    catch (e: Exception) { error = e.message ?: "AI 查询失败，请手动填写" }
-                    finally { progress = "" }
-                }
+            }, enabled = !looking && !state.busy)
+            Action("新建药品资料", secondary = true, enabled = !looking && !state.busy) { newProduct = JSONObject() }
+            if (recognized != null && product.isNotBlank()) Action("按识别结果新建药品资料", secondary = true, enabled = !looking && !state.busy) {
+                advanceAfterCreate = true; newProduct = recognized
             }
-            if (lookup?.isActive == true) Action("取消查询", secondary = true) { lookup?.cancel() }
+            Field("AI 检索药名 / 厂家 / 条码", query, { query = it }, enabled = !looking && !state.busy)
+            Text("AI 仅预填公开资料或照片可见文字，必须逐项核对药名、数量、有效期和批号。", color = Red)
+            Action("AI 检索预填", enabled = !looking && !state.busy && query.isNotBlank()) {
+                lookupMedicine()
+            }
+            if (looking) Action("取消查询", secondary = true) { lookup?.cancel() }
             if (progress.isNotBlank()) Text(progress)
-            Action("下一步：核对药盒", enabled = product.isNotBlank() && lookup?.isActive != true) { step = 2; error = null }
+            Action("下一步：核对药盒", enabled = product.isNotBlank() && !looking && !state.busy) { step = 2; error = null }
         } else {
             Text(state.products.find { it.id == product }?.name ?: "新建药品")
-            Picker("存放药箱", warehouse, state.warehouses.map { it.getString("id") to it.getString("name") }, { warehouse = it })
+            Picker("存放药箱", warehouse, state.warehouses.map { it.getString("id") to it.getString("name") }, { warehouse = it; checked = false })
             Field("有效期 YYYY-MM-DD（可空）", expiry, { expiry = it; checked = false })
             Field("批号（可空）", batch, { batch = it; checked = false })
             Field("每盒数量", size, { size = it; checked = false }, number = true)
@@ -225,7 +280,7 @@ private val productFields = listOf(
                     if (expiry.isNotBlank()) java.time.LocalDate.parse(expiry)
                     vm.save("POST", "/stock", json("product_id" to product, "warehouse_id" to warehouse, "code" to code,
                         "expiry_date" to expiry.ifBlank { null }, "batch_number" to batch.ifBlank { null },
-                        "units_per_package" to n, "packages" to count)) { dismiss() }
+                        "units_per_package" to n, "packages" to count)) { onSaved(); dismiss() }
                 } catch (e: Exception) { error = e.message ?: "请核对填写内容" }
             }
             Action("上一步", secondary = true, enabled = !state.busy) { step = 1 }
@@ -236,11 +291,17 @@ private val productFields = listOf(
         code = raw; scan = false
         vm.perform { resolve(raw) }
     }
+    if (photoDialog) PhotoCaptureDialog({ photoDialog = false }, initialPhotos = photos) { selected ->
+        photoDialog = false
+        photos = selected
+        lookupMedicine(selected)
+    }
     newProduct?.let { seed -> ProductEditor(seed, null, state.busy, { newProduct = null }) { body ->
         body.put("code", code)
         vm.perform {
             val created = vm.mutate("POST", "/products", body)
             product = created.getString("id"); size = body.get("units_per_package").toString(); newProduct = null
+            if (advanceAfterCreate) { step = 2; advanceAfterCreate = false }
         }
     } }
 }

@@ -20,12 +20,18 @@ data class AppState(
     val plans: List<Plan> = emptyList(), val todos: List<Todo> = emptyList(), val warehouses: List<JSONObject> = emptyList(),
     val today: String = LocalDate.now(DEFAULT_ZONE).toString(), val timezone: String = "Asia/Shanghai",
     val error: String? = null, val notice: String? = null,
+    val assistantTarget: String? = null, val assistantPhone: Boolean = true,
 )
+
+internal fun assistantTarget(state: AppState): String? {
+    val target = state.assistantTarget ?: state.user?.id
+    return target?.takeIf { id -> state.members.any { it.id == id } }
+}
 
 class AppViewModel(app: Application) : AndroidViewModel(app) {
     private val app get() = getApplication<Application>()
     val prefs = Prefs(app)
-    private val mutable = MutableStateFlow(AppState())
+    private val mutable = MutableStateFlow(AppState(assistantPhone = prefs.assistantPhone))
     val state = mutable.asStateFlow()
     private var generation = 0
     private var refreshJob: Job? = null
@@ -63,11 +69,12 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         selectGroupNow(selected)
     }
     private suspend fun selectGroupNow(id: String?) {
+        val user = mutable.value.user ?: return
         generation++
         if (refreshJob != currentCoroutineContext()[Job]) refreshJob?.cancel()
         mutable.update { it.copy(groupId = id, members = emptyList(), products = emptyList(), stock = emptyList(),
-            plans = emptyList(), todos = emptyList(), warehouses = emptyList()) }
-        val user = mutable.value.user ?: return
+            plans = emptyList(), todos = emptyList(), warehouses = emptyList(),
+            assistantTarget = id?.let { prefs.assistantTarget(user.id, it) }, assistantPhone = prefs.assistantPhone) }
         Sync.sessionChanged(app, Prefs.Session(user.id, id, user.elderly))
         if (id != null) refreshNow()
         syncDebounced()
@@ -104,7 +111,8 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
             val next = mutable.value.copy(members = members.await(), products = products.await(), stock = stock.await(),
                 plans = plans.await(), warehouses = warehouses.await(), todos = today.await().getJSONArray("items").objects().map(Todo::parse),
                 today = today.await().getString("date"), timezone = today.await().getString("timezone"))
-            if (generation == epoch) mutable.update { next.copy(busy = it.busy, error = it.error, notice = it.notice) }
+            if (generation == epoch) mutable.update { next.copy(busy = it.busy, error = it.error, notice = it.notice,
+                assistantTarget = it.assistantTarget, assistantPhone = it.assistantPhone) }
         }
     }
     private suspend fun handle(e: Exception) {
@@ -155,6 +163,18 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     fun syncDebounced() {
         syncJob?.cancel()
         syncJob = viewModelScope.launch { delay(1500); Sync.syncNow(app) }
+    }
+    fun setAssistantTarget(id: String) {
+        val s = mutable.value
+        val user = s.user ?: return
+        val group = s.groupId ?: return
+        if (s.members.none { it.id == id }) { error("请选择当前家庭成员"); return }
+        prefs.setAssistantTarget(user.id, group, id)
+        mutable.update { it.copy(assistantTarget = id) }
+    }
+    fun setAssistantPhone(phone: Boolean) {
+        prefs.assistantPhone = phone
+        mutable.update { it.copy(assistantPhone = phone) }
     }
     fun syncNow() = perform { Sync.syncNow(app); notice(prefs.lastError ?: "已同步 ${prefs.events} 个日历日程、${prefs.alarms} 个提醒") }
     fun logout() = perform {

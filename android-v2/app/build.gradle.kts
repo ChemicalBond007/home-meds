@@ -13,8 +13,8 @@ android {
         applicationId = "com.homemeds.app.v2"
         minSdk = 29
         targetSdk = 36
-        versionCode = 20000
-        versionName = "2.0.0"
+        versionCode = 20300
+        versionName = "2.3.0"
         buildConfigField("String", "BASE_URL", "\"$baseUrl\"")
     }
     buildFeatures { buildConfig = true; compose = true }
@@ -23,9 +23,11 @@ android {
         sourceCompatibility = JavaVersion.VERSION_17
         targetCompatibility = JavaVersion.VERSION_17
     }
-    testOptions { unitTests.isReturnDefaultValues = true }
+    testOptions { unitTests.isReturnDefaultValues = true; unitTests.isIncludeAndroidResources = true }
     lint { abortOnError = true }
 }
+
+base.archivesName.set("赛博药箱-${android.defaultConfig.versionName}")
 
 dependencies {
     implementation(platform("androidx.compose:compose-bom:2025.08.01"))
@@ -45,10 +47,14 @@ dependencies {
     implementation("androidx.camera:camera-camera2:1.4.2")
     implementation("androidx.camera:camera-lifecycle:1.4.2")
     implementation("androidx.camera:camera-view:1.4.2")
+    implementation("androidx.exifinterface:exifinterface:1.4.1")
     implementation("com.google.mlkit:barcode-scanning:17.3.0")
     implementation("com.google.zxing:core:3.5.3")
     testImplementation("junit:junit:4.13.2")
     testImplementation("org.json:json:20260814")
     testImplementation("com.squareup.okhttp3:mockwebserver:5.5.1")
     testImplementation("org.jetbrains.kotlinx:kotlinx-coroutines-test:1.11.0")
+    testImplementation("org.robolectric:robolectric:4.16.1")
+    testImplementation("androidx.compose.ui:ui-test-junit4")
+    debugImplementation("androidx.compose.ui:ui-test-manifest")
 }

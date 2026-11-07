@@ -10,11 +10,25 @@ import java.time.temporal.ChronoUnit
 
 fun stateLabel(state: String) = when (state) { "taken" -> "已吃"; "skipped" -> "已跳过"; "overdue" -> "已过时，先核实"; else -> "待吃" }
 
+@Composable internal fun MedicineLookupEntry(enabled: Boolean, scan: () -> Unit, photograph: () -> Unit) {
+    var choose by remember { mutableStateOf(false) }
+    Action("扫码查药 / 入库", enabled = enabled) { choose = true }
+    if (choose) Modal("选择查药方式", { choose = false }) {
+        Text("有条码可扫码；也可以直接拍摄同一药盒的多个角度查询资料，再核对入库。")
+        Action("扫描条码 / 追溯码") { choose = false; scan() }
+        Action("拍照查药 / 入库（多角度）", secondary = true) { choose = false; photograph() }
+    }
+}
+
 @Composable fun HomeScreen(vm: AppViewModel, state: AppState, dose: (DoseRequest) -> Unit) {
     var scan by remember { mutableStateOf(false) }
     var result by remember { mutableStateOf<JSONObject?>(null) }
     var code by remember { mutableStateOf("") }
     var intake by remember { mutableStateOf(false) }
+    var intakeDraft by remember { mutableStateOf<JSONObject?>(null) }
+    var photograph by remember { mutableStateOf(false) }
+    var photos by remember { mutableStateOf<List<PhotoAttachment>>(emptyList()) }
+    var photoResult by remember { mutableStateOf(false) }
     var member by remember { mutableStateOf(state.user?.id) }
     var skip by remember { mutableStateOf<Todo?>(null) }
     val speak = LocalSpeak.current
@@ -23,7 +37,9 @@ fun stateLabel(state: String) = when (state) { "taken" -> "已吃"; "skipped" ->
     val soon = active.count { it.expiry?.let { d -> ChronoUnit.DAYS.between(LocalDate.parse(state.today), LocalDate.parse(d)) in 0..30 } == true }
     Page("今日服药") {
         Text("${state.today} · ${state.timezone}", color = Muted)
-        Action("扫码查药 / 入库", enabled = state.groupId != null && !state.busy) { scan = true }
+        MedicineLookupEntry(state.groupId != null && !state.busy, scan = { scan = true }, photograph = {
+            photos = emptyList(); photograph = true
+        })
         if (state.groupId == null) Panel { Text("请先在设置中创建或选择家庭。") }
         if (expired + soon > 0) Panel("请检查家庭药箱", warning = true) {
             Text("已过期 $expired 盒 · 30 天内到期 $soon 盒", color = Red)
@@ -78,10 +94,17 @@ fun stateLabel(state: String) = when (state) { "taken" -> "已吃"; "skipped" ->
                 if (box != null) Text("该追溯码药盒已入库，请勿重复添加。", color = Red)
                 Action("朗读资料", secondary = true) { speak("${product.getString("name")}。${product.nullable("indications").orEmpty()}。${product.nullable("precautions").orEmpty()}") }
             } else Text("尚未关联药品，可手动录入，或让 AI 检索后逐项核对。")
-            Action("进入入库向导", enabled = box == null) { result = null; intake = true }
+            Action("进入入库向导", enabled = box == null) { result = null; intakeDraft = null; intake = true }
         }
     }
-    if (intake) IntakeDialog(vm, state, code) { intake = false }
+    if (photograph) PhotoCaptureDialog({ photograph = false; photos = emptyList() }, initialPhotos = photos) {
+        photos = it; photograph = false; photoResult = true
+    }
+    if (photoResult) PhotoLookupDialog(state, photos, dismiss = { photoResult = false; photos = emptyList() },
+        revise = { photoResult = false; photograph = true }, intake = { draft ->
+            intakeDraft = draft; code = ""; photoResult = false; photos = emptyList(); intake = true
+        })
+    if (intake) IntakeDialog(vm, state, initialCode = code, initialDraft = intakeDraft) { intake = false }
     skip?.let { todo -> Confirm("确认跳过本次", "${todo.time} ${todo.plan.medicineName}。只记录跳过，不扣库存。", { skip = null }) {
         vm.save("POST", "/doses", json("plan_id" to todo.plan.id, "local_date" to todo.date, "scheduled_time" to todo.time, "status" to "skipped")) { skip = null }
     } }

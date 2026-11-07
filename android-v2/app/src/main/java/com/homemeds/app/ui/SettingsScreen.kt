@@ -26,11 +26,24 @@ import java.time.format.DateTimeFormatter
     Page("设置") {
         if (state.user?.admin == true) Tabs(listOf("提醒与账号", "家庭管理", "AI 配置", "使用日志"), tab) { tab = it }
         when (tab) {
-            0 -> CalendarPanel(vm, state)
+            0 -> {
+                AssistantPreferencesPanel(state, vm::setAssistantTarget, vm::setAssistantPhone)
+                CalendarPanel(vm, state)
+            }
             1 -> if (state.user?.admin == true) FamilyPanel(vm, state)
             2 -> if (state.user?.admin == true) AiSettingsPanel(vm, state)
             3 -> if (state.user?.admin == true) LogsPanel(vm, state)
         }
+    }
+}
+
+@Composable internal fun AssistantPreferencesPanel(state: AppState, target: (String) -> Unit, phone: (Boolean) -> Unit) {
+    Panel("助手偏好") {
+        Picker("计划对象", assistantTarget(state), state.members.map { it.id to it.username }, target,
+            enabled = !state.busy && state.members.isNotEmpty())
+        if (state.members.isEmpty()) Text("请先选择家庭并添加成员。", color = Muted)
+        Check("手机直接连接模型（设备加密凭据）", state.assistantPhone, phone, enabled = !state.busy)
+        Text("关闭后纯文字对话使用服务端连接；带图片时仍需手机直连支持视觉的模型。", color = Muted)
     }
 }
 
@@ -57,7 +70,7 @@ import java.time.format.DateTimeFormatter
     LaunchedEffect(revision, state.notice, state.busy) { status = Sync.status(context) }
     fun open(intent: Intent) { runCatching { context.startActivity(intent) }.onFailure { vm.error("手机不支持此设置入口，请在系统设置中手动打开") } }
     Panel("本地日历与提醒") {
-        Text("所选成员的定时计划会写入手机本地「家药箱」日历，每条日程 15 分钟并按 RRULE 重复。")
+        Text("所选成员的定时计划会写入手机本地「赛博药箱」日历，每条日程 15 分钟并按 RRULE 重复。")
         state.members.forEach { user -> Check("同步 ${user.username}", user.id in members, {
             members = if (it) members + user.id else members - user.id
             vm.prefs.members = members.toList(); vm.syncDebounced()
