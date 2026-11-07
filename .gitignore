@@ -13,10 +13,10 @@ test-results/
 .qa/
 .secrets/
 platform-tools/
-android/.gradle/
-android/.kotlin/
-android/build/
-android/app/build/
-android/local.properties
+android-v2/.gradle/
+android-v2/.kotlin/
+android-v2/build/
+android-v2/app/build/
+android-v2/local.properties
 *.jks
 *.keystore

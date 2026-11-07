@@ -1,9 +1,16 @@
+import java.io.StringReader
+import java.util.Properties
+
 plugins {
     id("com.android.application")
     id("org.jetbrains.kotlin.plugin.compose")
 }
 
-val baseUrl = providers.gradleProperty("homeMedsBaseUrl").getOrElse("https://your-domain.example.com").trimEnd('/')
+val localBaseUrl = providers.fileContents(rootProject.layout.projectDirectory.file("local.properties"))
+    .asText.orNull?.let { content ->
+        Properties().apply { load(StringReader(content)) }.getProperty("homeMedsBaseUrl")?.trim()
+    }?.takeIf { it.isNotEmpty() }
+val baseUrl = (providers.gradleProperty("homeMedsBaseUrl").orNull ?: localBaseUrl ?: "https://your-domain.example.com").trimEnd('/')
 require(Regex("^https://[A-Za-z0-9.-]+(:\\d+)?$").matches(baseUrl)) { "homeMedsBaseUrl must be an HTTPS origin" }
 
 android {
@@ -28,6 +35,16 @@ android {
 }
 
 base.archivesName.set("赛博药箱-${android.defaultConfig.versionName}")
+
+androidComponents {
+    onVariants { variant ->
+        variant.outputs.forEach { output ->
+            if (output is com.android.build.api.variant.impl.VariantOutputImpl) {
+                output.outputFileName.set("赛博药箱-${android.defaultConfig.versionName}.apk")
+            }
+        }
+    }
+}
 
 dependencies {
     implementation(platform("androidx.compose:compose-bom:2025.08.01"))

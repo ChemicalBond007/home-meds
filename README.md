@@ -2,7 +2,7 @@
 
 **赛博药箱**（仓库与包名 `home-meds`，早期名称「家药箱」）是一套面向家庭日常用药场景的服药计划、药盒库存与提醒管理系统。
 
-后端基于 **Cloudflare Worker + Hono + D1** 构建，无需自备域名或 R2 存储；前端网页（**Cloudflare Pages**，「赛博药箱管理台」）为管理员提供账号安全、家庭设置、AI 配置与应用下载设置，另提供无需登录的公开下载页；家庭成员的日常服药打卡、扫码/拍照查药入库、服药计划管理、AI 对话助手与管理员全局使用日志由独立原生 **Android 2.x 客户端**（[`android-v2/`](android-v2/README.md)，Jetpack Compose）承载。早期 `android/` 1.0 WebView 工程保留在仓库中作为历史归档。
+后端基于 **Cloudflare Worker + Hono + D1** 构建，无需自备域名或 R2 存储；前端网页（**Cloudflare Pages**，「赛博药箱管理台」）为管理员提供账号安全、家庭设置、AI 配置与应用下载设置，另提供无需登录的公开下载页；家庭成员的日常服药打卡、扫码/拍照查药入库、服药计划管理、AI 对话助手与管理员全局使用日志由独立原生 **Android 客户端**（[`android-v2/`](android-v2/README.md)，Jetpack Compose）承载。
 
 ---
 
@@ -11,8 +11,7 @@
 | 文档 | 内容说明 |
 | :--- | :--- |
 | [`README.md`](README.md)（本文档） | 项目总览、核心功能、本地开发、部署流程、测试检查、目录结构与安全边界 |
-| [`android-v2/README.md`](android-v2/README.md) | 原生 Android 2.x 客户端（Jetpack Compose）编译、功能细节、AI Agent Loop、本地提醒与 SemVer 版本策略 |
-| [`android/README.md`](android/README.md) | 历史保留的 Android 1.0 WebView 外壳工程说明、编译方式与向 2.x 迁移注意事项 |
+| [`android-v2/README.md`](android-v2/README.md) | 原生 Android 客户端（Jetpack Compose）编译、功能细节、AI Agent Loop、本地提醒与 SemVer 版本策略 |
 | [`docs/architecture.md`](docs/architecture.md) | 系统架构拓扑、源码模块职责、D1 数据库 Schema 与触发器、加密认证模型、AI 搜索与提醒设计 |
 | [`docs/api.md`](docs/api.md) | Worker HTTP / SSE 接口手册（聚合同步、认证安全、药品库存、计划服药、AI 与全局使用日志） |
 
@@ -31,8 +30,7 @@
 | **网页管理台与下载页** | `src/client/`、`pages/` | React 19 + Vite 8 + TypeScript | **管理台仅限管理员访问，下载页公开**。提供「账号安全」（TOTP 验证器、WebAuthn 通行密钥、恢复码）、「家庭设置」（家庭、成员、药箱、管理员重置）、「AI 配置」（模型、搜索来源、配额与接口检测）及「应用下载」（APK 下载链接）。普通成员会话访问管理台会被拒绝，但可访问 `/download`，且不影响其手机端权限。 |
 | **服务端 API 与定时任务** | `src/worker/`、`migrations/` | Cloudflare Worker + Hono + D1 + WebCrypto | 提供 REST / SSE API、D1 关系型数据存储与 SQLite 事务触发器、HKDF/AES-GCM 密钥加解密、操作审计日志，以及每 5 分钟运行的 Cron Web Push 提醒任务。 |
 | **跨端共享模型** | `src/shared/` | TypeScript + Zod 4 | 前后端共用的数据校验 Schema、GS1 / GTIN / 20 位药品追溯码解析器、跨时区/DST 日程计算与今日清单状态推导。 |
-| **原生 Android 2.x 客户端（推荐）** | `android-v2/` | Kotlin + Jetpack Compose + CameraX + ML Kit + ZXing + WorkManager | 应用 ID `com.homemeds.app.v2`（当前 `2.5.0 / 20500`）。支持分组码优先注册与扫码填写；承载普通成员、老人模式与管理员的全部日常功能：今日清单、两步核对服药、扫码/多角度拍照识药入库、有效期/批号特写识别、库存流水、服药计划、AI 语音/多模态助手、本地日历与精确闹钟提醒，以及管理员全局使用日志。 |
-| **历史 Android 1.0 外壳（归档）** | `android/` | Kotlin + WebView + JS Bridge | 应用 ID `com.homemeds.app`（`1.0.0 / 1`）。早期包裹网页版的 WebView 外壳；因新网页版已精简为纯管理员设置台，日常使用请安装 2.x 客户端。 |
+| **原生 Android 客户端** | `android-v2/` | Kotlin + Jetpack Compose + CameraX + ML Kit + ZXing + WorkManager | 应用 ID `com.homemeds.app.v2`（当前 `2.5.0 / 20500`）。支持分组码优先注册与扫码填写；承载普通成员、老人模式与管理员的全部日常功能：今日清单、两步核对服药、扫码/多角度拍照识药入库、有效期/批号特写识别、库存流水、服药计划、AI 语音/多模态助手、本地日历与精确闹钟提醒，以及管理员全局使用日志。 |
 
 ---
 
@@ -267,8 +265,7 @@ npm run check:pages
 .
 ├── .github/workflows/
 │   └── checks.yml            # CI 检查与 main 分支自动部署流水线（D1 迁移 → Worker → Pages）
-├── android/                  # [历史归档] Android 1.0 WebView 外壳工程（com.homemeds.app）
-├── android-v2/               # [主力客户端] 原生 Android 2.5.0 Jetpack Compose 客户端（com.homemeds.app.v2）
+├── android-v2/               # 原生 Android 2.5.0 Jetpack Compose 客户端（com.homemeds.app.v2）
 ├── docs/                     # 架构设计与服务端 API 详细文档
 │   ├── architecture.md       # 系统架构、D1 数据模型、安全加密与 AI/提醒工作流说明
 │   └── api.md                # HTTP / SSE API 路由、请求头、参数与响应格式手册

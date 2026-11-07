@@ -4,10 +4,10 @@
 
 ---
 
-## 与 1.0 客户端的并存及迁移说明
+## 兼容与迁移说明
 
-- **独立包名与登录态**：2.x 客户端使用应用 ID `com.homemeds.app.v2`，可与仓库中保留的 [`android/`](../android/README.md) 1.0 WebView 客户端（`com.homemeds.app`）在同一设备并存，不继承 1.0 的浏览器 Cookie 登录态，首次安装后需重新登录。
-- **本地日历账号自动迁移**：自 2.1.0 起，客户端使用独立的本机日历账号「**赛博药箱**」（`CalendarContract.ACCOUNT_TYPE_LOCAL`）。每次执行日历同步或退出登录时，会自动清理 1.0 遗留的本机「家药箱」日历账号（仅清理 `ACCOUNT_TYPE_LOCAL` 类型的同名本地账号，绝不触碰系统其他日历或云端同步账号）。若设备上仍安装有 1.0 客户端，请先在 1.0 中关闭日历同步，避免旧账号被重新创建。
+- **独立包名与登录态**：客户端使用应用 ID `com.homemeds.app.v2`（早期 1.0 WebView 工程已从仓库移除）。
+- **本地日历账号自动迁移**：自 2.1.0 起，客户端使用独立的本机日历账号「**赛博药箱**」（`CalendarContract.ACCOUNT_TYPE_LOCAL`）。每次执行日历同步或退出登录时，会自动清理早期 1.0 遗留的本机「家药箱」日历账号（仅清理 `ACCOUNT_TYPE_LOCAL` 类型的同名本地账号，绝不触碰系统其他日历或云端同步账号）。
 - **网页端职责调整**：网页版已调整为纯管理员设置中心，家庭成员的日常服药、入库、计划、AI 助手及管理员全局使用日志均在本原生客户端中操作。
 
 ---
@@ -19,27 +19,28 @@
 - **Android SDK Platform 37**（`compileSdk = 37`，`targetSdk = 36`，`minSdk = 29` 即 Android 10+）
 - 首次构建需联网从 Google Maven / Maven Central 下载 Jetpack Compose、CameraX、Google ML Kit Barcode Scanning（随 APK 打包离线模型）、ZXing、OkHttp、WorkManager 及 Robolectric 测试依赖。
 
-### 1. 配置本地 SDK 路径
+### 1. 配置本地 SDK 路径与服务端地址
 
-在 `android-v2/local.properties`（已被版本库忽略，切勿提交）中指定本机 Android SDK 路径：
+在 `android-v2/local.properties`（已被版本库忽略，切勿提交）中指定本机 Android SDK 路径与线上服务端 HTTPS 根地址：
 
 ```properties
 sdk.dir=/path/to/your/Android/Sdk
+homeMedsBaseUrl=https://your-domain.example.com
 # Windows 示例：
 # sdk.dir=C\:\\Users\\<你的用户名>\\AppData\\Local\\Android\\Sdk
 ```
 
-### 2. 运行单元测试、Lint 检查与构建 Debug APK
+### 2. 运行单元测试、Lint 检查与构建 APK
 
 ```powershell
 cd android-v2
 # 如系统默认 JAVA_HOME 不是 JDK 21，请先指定：
 # $env:JAVA_HOME = '<JDK 21 安装路径>'
-.\gradlew.bat testDebugUnitTest lintDebug assembleDebug -PhomeMedsBaseUrl=https://your-domain.example.com
+.\gradlew.bat testDebugUnitTest lintDebug assembleDebug
 ```
 
-- **构建产物**：`android-v2/app/build/outputs/apk/debug/赛博药箱-2.5.0-debug.apk`
-- **指定服务端根地址**：仓库中默认占位地址为 `https://your-domain.example.com`。构建实际使用的 APK 时，请通过 `-PhomeMedsBaseUrl=https://your-host.example`（或在私有 `gradle.properties` 中设置 `homeMedsBaseUrl`）传入你的 HTTPS 线上同源根地址。正式客户端仅支持 HTTPS，不支持明文 HTTP。
+- **构建产物**：`android-v2/app/build/outputs/apk/debug/赛博药箱-2.5.0.apk`
+- **地址优先级**：命令行 `-PhomeMedsBaseUrl=https://...` > `android-v2/local.properties` 中的 `homeMedsBaseUrl` > 仓库默认占位符 `https://your-domain.example.com`。正式客户端仅支持 HTTPS，不支持明文 HTTP。
 
 ---
 
