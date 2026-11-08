@@ -103,13 +103,16 @@ class ChatRotationUiTest {
         compose.onNodeWithContentDescription("发送").performClick()
         compose.waitUntil(5000) { compose.onAllNodesWithText("已有回复继续完成").fetchSemanticsNodes().isNotEmpty() }
         compose.onNodeWithTag("chat_input").performTextInput("尚未发送的补充")
+        compose.onNodeWithTag("chat_input").assertTextContains("尚未发送的补充")
         scenario!!.onActivity { activity ->
             val chat = ViewModelProvider(activity)[AppViewModel::class.java].chat
+            assertEquals("尚未发送的补充", chat.text)
             chat.photos = listOf(PhotoAttachment("draft-photo", Bitmap.createBitmap(8, 8, Bitmap.Config.ARGB_8888)))
             chat.medicineDrafts = listOf(json("draft_id" to "med", "name" to "旋转前药品草稿"))
             chat.proposals = listOf(parseProposal(json("operation" to "create", "draft" to
                 CompactFixture.plan("draft", "a", "旋转前计划草稿", null, listOf("08:00"))), "a"))
         }
+        compose.onNodeWithTag("chat_input").assertTextContains("尚未发送的补充")
         rotate()
         compose.onNodeWithTag("chat_input").assertTextContains("尚未发送的补充")
         compose.onNodeWithText("1 / 6").assertExists()

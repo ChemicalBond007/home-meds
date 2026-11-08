@@ -18,7 +18,7 @@
 
 ## APK 优化方法
 
-1. `release` 开启 R8 代码压缩、优化与混淆，并开启资源压缩。仅使用 Android 默认优化规则与依赖自带的 consumer rules，没有用整包 `keep` 规则抵消瘦身。
+1. `release` 开启 R8 代码压缩、优化与混淆，并开启资源压缩。使用 Android 默认优化规则与依赖自带的 consumer rules，并在 `app/proguard-rules.pro` 补入 Firebase 上游的 `ComponentRegistrar` 无参构造函数保留规则；没有用整包 `keep` 或关闭 R8 抵消瘦身。ML Kit 17.3.0 间接依赖的 firebase-components 16.1.0 缺少该构造函数规则，R8 全模式会移除反射入口，造成正式包扫码初始化失败。规则移植自 firebase-components 19.0.0（[上游问题 #1018](https://github.com/googlesamples/mlkit/issues/1018)），不升级依赖。`assembleRelease` 自动执行 `verifyReleaseScanner`，检查正式混淆映射中的三个 ML Kit 注册组件及其无参构造函数；Debug 单元测试不能代替这个验证或真机扫码测试。
 2. 调试工具仍限于 `debugImplementation`；正式分发不要使用 `assembleDebug` 产物。
 3. 默认继续生成兼容 `arm64-v8a`、`armeabi-v7a`、`x86`、`x86_64` 的通用包。可选 `-PhomeMedsAbis=arm64-v8a` 只保留对应架构本地库，并使用独立文件名，避免与通用包混淆；非法 ABI 参数会直接报错。
 4. ML Kit 离线扫码模型、CameraX、系统相机、多图识药、提醒、语音功能不移除。架构专用包只适用于明确匹配的设备。

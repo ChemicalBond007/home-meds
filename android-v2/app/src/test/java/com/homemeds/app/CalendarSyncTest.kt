@@ -23,13 +23,15 @@ import java.time.ZoneId
 @RunWith(RobolectricTestRunner::class)
 @Config(sdk = [35], manifest = Config.NONE, application = Application::class)
 class CalendarSyncTest {
+    private val isTestApp = BuildConfig.APPLICATION_ID.endsWith(".test")
     private val app get() = RuntimeEnvironment.getApplication()
     private lateinit var provider: CalendarProvider
     class CalendarProvider : ContentProvider() {
         val rows = linkedMapOf(1L to ("家药箱" to CalendarContract.ACCOUNT_TYPE_LOCAL),
             2L to ("赛博药箱" to CalendarContract.ACCOUNT_TYPE_LOCAL),
             3L to ("其他日历" to CalendarContract.ACCOUNT_TYPE_LOCAL),
-            4L to ("家药箱" to "remote.account"))
+            4L to ("家药箱" to "remote.account"),
+            5L to ("赛博药箱测试" to CalendarContract.ACCOUNT_TYPE_LOCAL))
         val deleted = mutableListOf<Uri>()
         override fun onCreate() = true
         override fun query(uri: Uri, projection: Array<out String>?, selection: String?, args: Array<out String>?, sort: String?): Cursor =
@@ -55,25 +57,25 @@ class CalendarSyncTest {
         ShadowContentResolver.registerProviderInternal(CalendarContract.AUTHORITY, provider)
     }
     @Test fun syncWithoutPlansStillCleansLegacyLocalAccountsOnly() {
-        provider.rows.remove(2)
+        provider.rows.remove(if (isTestApp) 5L else 2L)
         assertEquals(0, CalendarSync.sync(app, emptyList(), ZoneId.of("Asia/Shanghai")))
-        assertEquals(setOf(3L, 4L), provider.rows.keys)
-        assertEquals(1, provider.deleted.size)
+        assertEquals(if (isTestApp) setOf(1L, 2L, 3L, 4L) else setOf(3L, 4L, 5L), provider.rows.keys)
+        assertEquals(if (isTestApp) 0 else 1, provider.deleted.size)
         assertEquals(0, CalendarSync.sync(app, emptyList(), ZoneId.of("Asia/Shanghai")))
-        assertEquals(1, provider.deleted.size)
+        assertEquals(if (isTestApp) 0 else 1, provider.deleted.size)
     }
     @Test fun logoutCleansBothNamesWithoutDeletingOtherCalendars() {
         CalendarSync.deleteAll(app)
-        assertEquals(setOf(3L, 4L), provider.rows.keys)
-        assertEquals(2, provider.deleted.size)
+        assertEquals(if (isTestApp) setOf(1L, 2L, 3L, 4L) else setOf(3L, 4L, 5L), provider.rows.keys)
+        assertEquals(if (isTestApp) 1 else 2, provider.deleted.size)
         CalendarSync.deleteAll(app)
-        assertEquals(2, provider.deleted.size)
+        assertEquals(if (isTestApp) 1 else 2, provider.deleted.size)
     }
     @Test fun deniedPermissionsDoNotTouchCalendars() {
         shadowOf(app).denyPermissions(Manifest.permission.WRITE_CALENDAR)
         CalendarSync.deleteAll(app)
         assertEquals(0, CalendarSync.sync(app, emptyList(), ZoneId.of("Asia/Shanghai")))
-        assertEquals(4, provider.rows.size)
+        assertEquals(5, provider.rows.size)
         assertTrue(provider.deleted.isEmpty())
     }
 }

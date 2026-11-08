@@ -1,6 +1,6 @@
-# 赛博药箱 2.8.2：原生 Android 客户端（`android-v2/`）
+# 赛博药箱 2.8.5：原生 Android 客户端（`android-v2/`）
 
-`android-v2/` 是**赛博药箱**的主力原生 Android 客户端（当前版本 **`2.8.2` / `versionCode = 20802`**），基于 **Kotlin + Jetpack Compose** 构建，不嵌入 WebView 浏览器，也不下载网页端静态资源。客户端直接通过 `/api/*` JSON 与 SSE 接口与 Cloudflare Worker 后端通信；手机运行 AI 循环时，经 Worker 代理访问模型与 Tavily，只对公开网页执行无密钥直连。
+`android-v2/` 是**赛博药箱**的主力原生 Android 客户端（当前版本 **`2.8.5` / `versionCode = 20805`**），基于 **Kotlin + Jetpack Compose** 构建，不嵌入 WebView 浏览器，也不下载网页端静态资源。客户端直接通过 `/api/*` JSON 与 SSE 接口与 Cloudflare Worker 后端通信；手机运行 AI 循环时，经 Worker 代理访问模型与 Tavily，只对公开网页执行无密钥直连。
 
 ---
 
@@ -36,16 +36,18 @@ homeMedsBaseUrl=https://your-domain.example.com
 cd android-v2
 # 如系统默认 JAVA_HOME 不是 JDK 21，请先指定：
 # $env:JAVA_HOME = '<JDK 21 安装路径>'
-.\gradlew.bat testDebugUnitTest lintDebug assembleDebug
+.\gradlew.bat testDebugUnitTest lintQa assembleTest
 # 正式版（开启 R8 代码压缩、优化与混淆，以及资源压缩）：
 .\gradlew.bat lintRelease assembleRelease
+# assembleRelease 自动执行 verifyReleaseScanner，校验压缩后 ML Kit 注册组件构造函数。
 # 可选：仅支持 ARM64 设备的更小安装包，默认仍构建兼容四种 ABI 的通用包：
 .\gradlew.bat assembleRelease -PhomeMedsAbis=arm64-v8a
 ```
 
-- **调试产物**：`android-v2/app/build/outputs/apk/debug/赛博药箱-2.8.2.apk`，保留调试工具，不代表最终分发体积。
-- **正式产物**：`android-v2/app/build/outputs/apk/release/赛博药箱-2.8.2.apk`。当前未配置正式签名，分发前必须使用自己的签名密钥；不要用调试密钥替代。保存 `app/build/outputs/mapping/release/mapping.txt` 以便还原混淆堆栈。
-- **按设备架构精简**：`-PhomeMedsAbis=arm64-v8a` 生成 `赛博药箱-2.8.2-arm64-v8a.apk`；也支持逗号分隔的 `arm64-v8a,armeabi-v7a,x86,x86_64` 子集。此参数只裁剪本地库，不移除离线扫码模型；仅在明确设备 ABI 时使用，不能将 ARM64 专用包分发给 32 位设备或 x86 模拟器。体积对比见 [`docs/optimization.md`](../docs/optimization.md)。
+- **测试产物**：`android-v2/app/build/outputs/apk/qa/赛博药箱测试-2.8.5-test.<N>.apk`。`assembleTest` 是 `assembleQa` 的别名（Android 保留 `test` 构建类型前缀）。沿用正式版的 R8 与资源压缩，独立验证测试版扫码注册组件。包名 `com.homemeds.app.v2.test`、桌面名称「赛博药箱测试」，可与正式版同时安装；FileProvider 与本地日历也独立。服务端数据仍取决于账号与地址，建议使用测试账号或通过 `-PhomeMedsBaseUrl=https://...` 指定测试服务端。
+- **测试序号**：基于当前正式版自动生成 `<正式版>-test.<N>`，`versionCode` 保持正式版值。按基准版在已忽略的 `.gradle/test-builds/` 中保存已分配序号，每次测试构建递增，`clean` 不重置。失败构建也可能消耗序号。不要删除计数文件；可用 `-PhomeMedsTestBuild=N` 指定更高序号。只运行 Debug 单元测试或正式构建不消耗测试序号。
+- **正式产物**：`android-v2/app/build/outputs/apk/release/赛博药箱-2.8.5.apk`。已配置从仓库根目录的 `.secrets/home-meds_android-release/` 读取正式签名材料，缺失时保持未签名，绝不回退到调试密钥。测试版优先使用同一正式签名，缺失时仅测试版回退到调试签名；切换签名后不能直接覆盖原测试版。切勿提交签名材料或输出密码。保存 `app/build/outputs/mapping/release/mapping.txt` 以便还原混淆堆栈。
+- **按设备架构精简**：`-PhomeMedsAbis=arm64-v8a` 生成 `赛博药箱-2.8.5-arm64-v8a.apk`；也支持逗号分隔的 `arm64-v8a,armeabi-v7a,x86,x86_64` 子集。此参数只裁剪本地库，不移除离线扫码模型；仅在明确设备 ABI 时使用，不能将 ARM64 专用包分发给 32 位设备或 x86 模拟器。体积对比见 [`docs/optimization.md`](../docs/optimization.md)。
 - **地址优先级**：命令行 `-PhomeMedsBaseUrl=https://...` > `android-v2/local.properties` 中的 `homeMedsBaseUrl` > 仓库默认占位符 `https://your-domain.example.com`。正式客户端仅支持 HTTPS，不支持明文 HTTP。
 
 ---
@@ -128,6 +130,8 @@ android-v2/app/src/
 
 ### 4. 设置中心与管理员能力
 - 设置页是一个短菜单，每一行打开带返回箭头的子页面（导航路由 `settings/*`）。
+- **关于软件**：所有成员均可查看当前 APK 的版本名称与版本号、离线 MIT 许可证全文和版权声明，并点击 GitHub 项目主页跳转浏览器。
+- **方向变化保留进度**：主 Activity 直接处理方向与窗口尺寸变化，Compose 随新尺寸重新布局，不因横竖屏切换销毁页面或取消页面任务。表单、两步确认、照片、弹窗和进行中的查询保留在内存中；这不承诺系统杀死进程或其他类型 Activity 重建后的草稿恢复，也不将密码、照片或医疗草稿写入实例状态。
 - **所有成员可见**：助手偏好（计划对象选择、是否开启「手机运行 AI 循环」）、日历与提醒（同步哪些家人的计划、日历响铃与应用通知开关、上次同步与「立即同步」）、权限与后台（日历、通知、精确闹钟、电池优化各一行，显示状态与「去开启」）、账号与安全（账号、验证器与恢复码状态、「重新生成恢复码」对话框、退出登录）。
 - **管理员专属**：
   - 账号安全：TOTP 验证器本地二维码生成与唤起、一次性恢复码生成（在对话框中输入 6 位验证码）与保存为本地文件。
@@ -241,6 +245,9 @@ versionCode = MAJOR * 10000 + MINOR * 100 + PATCH
 
 | 版本 (`versionName` / `versionCode`) | 主要变更内容 |
 | :--- | :--- |
+| **`2.8.5` / `20805`** | 扫码预览按宽度展示 4:3 取景区并居中裁切，不再缩小画面；相机就绪后中央显示扫描框、往返扫描线及对准提示，保留边界裁剪和手动输入。按扫码交互改进的补丁修正递增。 |
+| **`2.8.4` / `20804`** | 修复扫码相机预览覆盖弹窗控件：限制预览高度，裁剪原生视图与 Compose 容器边界，画面居中完整显示，手动输入与按钮分行；横竖屏均可滚动到操作区。保留 2.8.3 的正式压缩包扫码初始化修复，按兼容布局缺陷修复使用 PATCH 递增。 |
+| **`2.8.3` / `20803`** | 修复正式压缩包点击扫码入口闪退：移植 Firebase 上游注册组件无参构造函数保留规则，权限未授予时不初始化解码器，初始化失败保留手动输入。正式构建自动验证 ML Kit 三个注册组件构造函数，避免仅 Debug 测试通过而发布版不可用。兼容现有数据与 API，按缺陷修复使用 PATCH 递增。 |
 | **`2.8.2` / `20802`** | 修复助手直接显示 Markdown 标记的问题：流式及历史回复统一使用原生 CommonMark 渲染，支持列表、加粗、标题、引用、代码、链接及表格；保留用户原文，不执行 HTML 或自动加载远程图片。兼容现有服务端 API 和会话数据，按缺陷修复使用 PATCH 递增。 |
 | **`2.8.1` / `20801`** | 修复屏幕旋转导致助手历史记录、输入与进行中回复丢失：会话和请求由 Activity ViewModel 持有，保留图片、推荐回复与待确认草稿；清空与切换账号/家庭/对象仍取消并隔离旧请求。兼容现有服务端 API 与本地数据格式，按缺陷修复使用 PATCH 递增。 |
 | **`2.8.0` / `20800`** | 新增药盒按药箱、药品、状态、有效期和开封状态组合筛选，提供有效期、余量、药名、最近入库排序与药箱分组，按家庭保存本机偏好。保留现有服务端 API 与库存操作，按兼容新增功能使用 MINOR 递增。 |

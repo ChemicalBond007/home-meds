@@ -1,4 +1,5 @@
 import java.io.StringReader
+import java.io.RandomAccessFile
 import java.util.Properties
 
 plugins {
@@ -18,6 +19,11 @@ require(apkAbis == null || apkAbis.all { it in setOf("arm64-v8a", "armeabi-v7a",
 }
 val apkSuffix = apkAbis?.joinToString("-", prefix = "-").orEmpty()
 
+// 正式签名材料位于仓库外层 .secrets/（已被 Git 忽略）。密码只在构建时读取，不写入脚本。
+val signingDir = rootProject.layout.projectDirectory.dir("../.secrets/home-meds_android-release")
+val hasReleaseSigning = signingDir.file("homemeds-release.p12").asFile.isFile && signingDir.file("password.txt").asFile.isFile
+val releaseStorePassword = providers.fileContents(signingDir.file("password.txt")).asText.map { it.trim() }
+
 android {
     namespace = "com.homemeds.app"
     compileSdk = 37
@@ -25,17 +31,65 @@ android {
         applicationId = "com.homemeds.app.v2"
         minSdk = 29
         targetSdk = 36
-        versionCode = 20802
-        versionName = "2.8.2"
+        versionCode = 20805
+        versionName = "2.8.5"
         buildConfigField("String", "BASE_URL", "\"$baseUrl\"")
         apkAbis?.let { selected -> ndk { abiFilters += selected } }
     }
-    buildFeatures { buildConfig = true; compose = true }
+    buildFeatures { buildConfig = true; compose = true; resValues = true }
+    signingConfigs {
+        if (hasReleaseSigning) {
+            create("release") {
+                storeFile = signingDir.file("homemeds-release.p12").asFile
+                storeType = "PKCS12"
+                storePassword = releaseStorePassword.get()
+                keyAlias = "homemeds-release"
+                keyPassword = releaseStorePassword.get()
+            }
+        }
+    }
     buildTypes {
         release {
             isMinifyEnabled = true
             isShrinkResources = true
-            proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"))
+            proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
+            // 没有签名材料时保持未签名，不回退到调试密钥。
+            signingConfig = signingConfigs.findByName("release")
+        }
+        // 测试版：与正式版同构（R8、资源压缩），但包名、名称与版本号带「测试」标注，可与正式版共存。
+        create("qa") {
+            initWith(getByName("release"))
+            val baseVersion = defaultConfig.versionName!!
+            val counter = rootProject.layout.projectDirectory.file(".gradle/test-builds/$baseVersion.txt")
+            val previous = providers.fileContents(counter).asText.orElse("0").get().trim().toInt()
+            val number = providers.gradleProperty("homeMedsTestBuild").orNull?.toInt()
+                ?: Math.addExact(previous, 1)
+            require(number > 0) { "homeMedsTestBuild must be a positive integer" }
+            val counterFile = counter.asFile
+            val reserveNumber = tasks.register("reserveQaBuildNumber") {
+                group = "build"
+                description = "Reserves a unique test build number without changing the release version."
+                doLast {
+                    counterFile.parentFile.mkdirs()
+                    RandomAccessFile(counterFile, "rw").use { file ->
+                        file.channel.lock().use {
+                            val current = file.readLine()?.trim()?.toInt() ?: 0
+                            check(current == previous && number > current) {
+                                "Test build number already used; rerun the build with a higher number."
+                            }
+                            file.setLength(0)
+                            file.writeBytes(number.toString())
+                        }
+                    }
+                }
+            }
+            tasks.matching { it.name == "preQaBuild" }.configureEach { dependsOn(reserveNumber) }
+            applicationIdSuffix = ".test"
+            versionNameSuffix = "-test.$number"
+            resValue("string", "app_name", "赛博药箱测试")
+            // 测试版需要可安装的签名：优先正式密钥，否则使用调试密钥。
+            signingConfig = signingConfigs.findByName("release") ?: signingConfigs.getByName("debug")
+            matchingFallbacks += listOf("release")
         }
     }
     androidResources { localeFilters += listOf("zh-rCN") }
@@ -47,17 +101,57 @@ android {
     lint { abortOnError = true }
 }
 
+// Android reserves names beginning with "test"; retain qa and provide the documented entry point.
+tasks.register("assembleTest") {
+    group = "build"
+    description = "Builds the independently installable test APK."
+    dependsOn("assembleQa")
+}
+
 base.archivesName.set("赛博药箱-${android.defaultConfig.versionName}$apkSuffix")
 
 androidComponents {
+    beforeVariants(selector().withBuildType("qa")) {
+        it.hostTests.getValue(com.android.build.api.variant.HostTestBuilder.UNIT_TEST_TYPE).enable = true
+    }
     onVariants { variant ->
         variant.outputs.forEach { output ->
             if (output is com.android.build.api.variant.impl.VariantOutputImpl) {
-                output.outputFileName.set("赛博药箱-${android.defaultConfig.versionName}$apkSuffix.apk")
+                val label = if (variant.buildType == "qa") "赛博药箱测试" else "赛博药箱"
+                output.outputFileName.set(output.versionName.map { "$label-$it$apkSuffix.apk" })
             }
         }
     }
 }
+
+// These manifest-discovered constructors must survive R8, not just debug unit tests.
+fun registerScannerVerification(buildType: String) = tasks.register("verify${buildType}Scanner") {
+    group = "verification"
+    description = "Checks ML Kit registrar constructors in the minified release mapping."
+    dependsOn("minify${buildType}WithR8")
+    val mapping = layout.buildDirectory.file("outputs/mapping/${buildType.lowercase()}/mapping.txt")
+    inputs.file(mapping)
+    doLast {
+        val lines = mapping.get().asFile.readLines()
+        listOf(
+            "com.google.mlkit.common.internal.CommonComponentRegistrar",
+            "com.google.mlkit.vision.barcode.internal.BarcodeRegistrar",
+            "com.google.mlkit.vision.common.internal.VisionCommonRegistrar",
+        ).forEach { registrar ->
+            val start = lines.indexOf("$registrar -> $registrar:")
+            check(start >= 0) { "ML Kit registrar removed or renamed: $registrar" }
+            val members = lines.drop(start + 1).takeWhile { it.startsWith(" ") || it.startsWith("#") }
+            check(members.any { Regex("""\bvoid <init>\(\)""").containsMatchIn(it) }) {
+                "ML Kit registrar constructor removed by R8: $registrar"
+            }
+        }
+        logger.lifecycle("ML Kit $buildType registrar constructors verified.")
+    }
+}
+val verifyReleaseScanner = registerScannerVerification("Release")
+val verifyQaScanner = registerScannerVerification("Qa")
+tasks.matching { it.name == "assembleRelease" }.configureEach { dependsOn(verifyReleaseScanner) }
+tasks.matching { it.name == "assembleQa" }.configureEach { dependsOn(verifyQaScanner) }
 
 dependencies {
     implementation(platform("androidx.compose:compose-bom:2025.08.01"))

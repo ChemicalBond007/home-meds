@@ -143,7 +143,7 @@ class CompactLayoutUiTest {
         val last = compose.onNodeWithText("使用日志").assertIsDisplayed()
         assertTrue("menu must fit without scrolling", bounds(last).bottom <= frame.bottom)
         for (entry in settingsEntries) {
-            compose.onNodeWithText(entry.title).performClick()
+            compose.onNodeWithText(entry.title).performScrollTo().performClick()
             compose.waitForIdle()
             compose.onNodeWithContentDescription("返回").assertIsDisplayed()
             compose.onNodeWithText(entry.title).assertIsDisplayed()

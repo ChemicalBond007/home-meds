@@ -19,7 +19,8 @@ import java.time.ZoneId
  * are matched by SYNC_DATA1 (plan|time) and replaced when their fingerprint changes.
  */
 object CalendarSync {
-    private const val ACCOUNT = "赛博药箱"
+    private val isTestApp = BuildConfig.APPLICATION_ID.endsWith(".test")
+    private val ACCOUNT = if (isTestApp) "赛博药箱测试" else "赛博药箱"
     private const val LEGACY_ACCOUNT = "家药箱"
 
     fun hasPermission(context: Context) = listOf(Manifest.permission.READ_CALENDAR, Manifest.permission.WRITE_CALENDAR)
@@ -58,7 +59,7 @@ object CalendarSync {
     fun sync(context: Context, specs: List<EventSpec>, zone: ZoneId): Int {
         if (!hasPermission(context)) return 0
         val cr = context.contentResolver
-        deleteAccount(cr, LEGACY_ACCOUNT)
+        if (!isTestApp) deleteAccount(cr, LEGACY_ACCOUNT)
         val calendar = find(cr) ?: if (specs.isEmpty()) return 0 else create(cr, zone)
         val desired = specs.associateBy { it.key }
         val kept = mutableSetOf<String>()
@@ -102,7 +103,7 @@ object CalendarSync {
         if (!hasPermission(context)) return
         val cr = context.contentResolver
         deleteAccount(cr, ACCOUNT)
-        deleteAccount(cr, LEGACY_ACCOUNT)
+        if (!isTestApp) deleteAccount(cr, LEGACY_ACCOUNT)
     }
 
     private fun deleteAccount(cr: ContentResolver, account: String) {

@@ -36,6 +36,7 @@ internal val settingsEntries = listOf(
     SettingsEntry("permissions", "权限与后台"), SettingsEntry("account", "账号与安全"),
     SettingsEntry("family", "家庭管理", admin = true), SettingsEntry("ai", "AI 配置", admin = true),
     SettingsEntry("logs", "使用日志", admin = true),
+    SettingsEntry("about", "关于软件"),
 )
 
 /** Settings tab: a short menu whose rows open full sub-pages under `settings/<id>`. */
@@ -54,6 +55,7 @@ fun NavGraphBuilder.settingsGraph(nav: NavController, vm: AppViewModel, state: A
                         "family" -> FamilyPanel(vm, state)
                         "ai" -> AiSettingsPanel(vm, state)
                         "logs" -> LogsPanel(vm, state)
+                        "about" -> AboutPanel { vm.error(it) }
                     }
                 }
             }
@@ -80,6 +82,7 @@ private fun formatSync(millis: Long?) = millis?.let {
         "family" to "${state.groups.size} 个家庭 · 成员与药箱",
         "ai" to "模型、检索与测试查询",
         "logs" to "操作审计与 AI 用量",
+        "about" to "版本 ${BuildConfig.VERSION_NAME} · MIT License",
     )
     Page {
         RowGroup {
