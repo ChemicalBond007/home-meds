@@ -75,13 +75,15 @@ import org.json.JSONObject
                         setPixels(IntArray(512 * 512) { i -> if (matrix[i % 512, i / 512]) android.graphics.Color.BLACK else android.graphics.Color.WHITE }, 0, 512, 0, 0, 512, 512)
                     }
                 }
-                Image(bitmap.asImageBitmap(), "验证器绑定二维码", Modifier.fillMaxWidth().height(260.dp))
+                Image(bitmap.asImageBitmap(), "验证器绑定二维码", Modifier.fillMaxWidth().height(240.dp))
                 SelectionContainer { Text("手动密钥：${data.getString("secret")}") }
-                Action("复制手动密钥", secondary = true) {
-                    (context.getSystemService(ClipboardManager::class.java)).setPrimaryClip(ClipData.newPlainText("验证器密钥", data.getString("secret")))
-                }
-                Action("打开本机验证器", secondary = true) {
-                    runCatching { context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(uri))) }.onFailure { vm.error("未找到支持的验证器，请扫描二维码或手动输入密钥") }
+                ActionRow {
+                    Action("复制手动密钥", secondary = true) {
+                        (context.getSystemService(ClipboardManager::class.java)).setPrimaryClip(ClipData.newPlainText("验证器密钥", data.getString("secret")))
+                    }
+                    Action("打开本机验证器", secondary = true) {
+                        runCatching { context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(uri))) }.onFailure { vm.error("未找到支持的验证器，请扫描二维码或手动输入密钥") }
+                    }
                 }
                 Field("验证器当前 6 位验证码", code, { code = it.filter(Char::isDigit).take(6) }, secret = true)
                 Action("确认绑定", enabled = !state.busy && code.length == 6) {

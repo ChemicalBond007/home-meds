@@ -30,7 +30,7 @@
 | **网页管理台与下载页** | `src/client/`、`pages/` | React 19 + Vite 8 + TypeScript | **管理台仅限管理员访问，下载页公开**。提供「账号安全」（TOTP 验证器、WebAuthn 通行密钥、恢复码）、「家庭设置」（家庭、成员、药箱、管理员重置）、「AI 配置」（模型、搜索来源、配额与接口检测）及「应用下载」（APK 下载链接）。普通成员会话访问管理台会被拒绝，但可访问 `/download`，且不影响其手机端权限。 |
 | **服务端 API 与定时任务** | `src/worker/`、`migrations/` | Cloudflare Worker + Hono + D1 + WebCrypto | 提供 REST / SSE API、D1 关系型数据存储与 SQLite 事务触发器、HKDF/AES-GCM 密钥加解密、操作审计日志，以及每 5 分钟运行的 Cron Web Push 提醒任务。 |
 | **跨端共享模型** | `src/shared/` | TypeScript + Zod 4 | 前后端共用的数据校验 Schema、GS1 / GTIN / 20 位药品追溯码解析器、跨时区/DST 日程计算与今日清单状态推导。 |
-| **原生 Android 客户端** | `android-v2/` | Kotlin + Jetpack Compose + CameraX + ML Kit + ZXing + WorkManager | 应用 ID `com.homemeds.app.v2`（当前 `2.5.0 / 20500`）。支持分组码优先注册与扫码填写；承载普通成员、老人模式与管理员的全部日常功能：今日清单、两步核对服药、扫码/多角度拍照识药入库、有效期/批号特写识别、库存流水、服药计划、AI 语音/多模态助手、本地日历与精确闹钟提醒，以及管理员全局使用日志。 |
+| **原生 Android 客户端** | `android-v2/` | Kotlin + Jetpack Compose + CameraX + ML Kit + ZXing + WorkManager | 应用 ID `com.homemeds.app.v2`（当前 `2.6.0 / 20600`）。支持分组码优先注册与扫码填写；承载普通成员、老人模式与管理员的全部日常功能：今日清单、两步核对服药、扫码/多角度拍照识药入库、有效期/批号特写识别、库存流水、服药计划、AI 语音/多模态助手、本地日历与精确闹钟提醒，以及管理员全局使用日志。 |
 
 ---
 
@@ -108,7 +108,7 @@ VAPID_PRIVATE_KEY=
 # 以下变量仅供 npm run probe:ai 命令行探测脚本使用，Worker 正式运行只读取管理后台加密保存的配置
 LLM_BASE_URL=https://llm.example.com/api
 LLM_API_KEY=
-LLM_MODEL=qwen3.5-27b
+*********************
 TAVILY_API_KEY=
 ```
 
@@ -265,7 +265,7 @@ npm run check:pages
 .
 ├── .github/workflows/
 │   └── checks.yml            # CI 检查与 main 分支自动部署流水线（D1 迁移 → Worker → Pages）
-├── android-v2/               # 原生 Android 2.5.0 Jetpack Compose 客户端（com.homemeds.app.v2）
+├── android-v2/               # 原生 Android 2.6.0 Jetpack Compose 客户端（com.homemeds.app.v2）
 ├── docs/                     # 架构设计与服务端 API 详细文档
 │   ├── architecture.md       # 系统架构、D1 数据模型、安全加密与 AI/提醒工作流说明
 │   └── api.md                # HTTP / SSE API 路由、请求头、参数与响应格式手册

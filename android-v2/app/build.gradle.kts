@@ -20,8 +20,8 @@ android {
         applicationId = "com.homemeds.app.v2"
         minSdk = 29
         targetSdk = 36
-        versionCode = 20500
-        versionName = "2.5.0"
+        versionCode = 20600
+        versionName = "2.6.0"
         buildConfigField("String", "BASE_URL", "\"$baseUrl\"")
     }
     buildFeatures { buildConfig = true; compose = true }

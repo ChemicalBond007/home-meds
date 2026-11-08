@@ -1,7 +1,8 @@
 package com.homemeds.app.ui
 
 import android.app.Activity
-import android.content.Intent
+import android.Manifest
+import android.content.pm.PackageManager
 import android.speech.RecognizerIntent
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
@@ -15,6 +16,7 @@ import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.Send
+import androidx.compose.material.icons.automirrored.filled.VolumeUp
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Mic
 import androidx.compose.material.icons.filled.PhotoCamera
@@ -25,10 +27,15 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.core.content.ContextCompat
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
+import androidx.lifecycle.compose.LocalLifecycleOwner
 import com.homemeds.app.*
 import com.homemeds.app.net.AiAgent
 import kotlinx.coroutines.*
@@ -92,9 +99,10 @@ fun parseProposal(o: JSONObject, target: String): Proposal {
     var error by remember { mutableStateOf<String?>(null) }
     val scope = rememberCoroutineScope()
     val speak = LocalSpeak.current
-    val voice = rememberLauncherForActivityResult(ActivityResultContracts.StartActivityForResult()) { result ->
-        if (result.resultCode == Activity.RESULT_OK) result.data?.getStringArrayListExtra(RecognizerIntent.EXTRA_RESULTS)?.firstOrNull()?.let { text = it.take(6000) }
-    }
+    val voice = rememberChatVoiceInput(
+        recognized = { text = appendRecognizedText(text, it) },
+        reportError = { error = it },
+    )
     fun send() {
         val prompt = text.trim().ifBlank {
             if (photos.isNotEmpty()) "请综合这些照片中同一药盒的各个角度识别药品并生成待确认入库草稿"
@@ -138,25 +146,28 @@ fun parseProposal(o: JSONObject, target: String): Proposal {
         }
     }
     ChatLayout(revision = "${messages.size}:${partial.length}:${medicineDrafts.size}:${proposals.size}", composer = {
+        if (voice.busy) Row(Modifier.padding(horizontal = 16.dp), verticalAlignment = Alignment.CenterVertically) {
+            Text("正在语音输入…", color = Muted)
+            if (voice.listening) TextButton(voice.cancel) { Text("取消") }
+        }
         ChatComposer(text, { text = it.take(6000) }, photos, suggestions, running,
-            canSend = target != null && state.groupId != null && (text.isNotBlank() || photos.isNotEmpty()),
+            canSend = !voice.busy && target != null && state.groupId != null && (text.isNotBlank() || photos.isNotEmpty()),
             photograph = { photoDialog = true },
             removePhoto = { index -> photos = photos.filterIndexed { i, _ -> i != index } },
             voice = {
-                runCatching { voice.launch(Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH)
-                    .putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
-                    .putExtra(RecognizerIntent.EXTRA_LANGUAGE, "zh-CN").putExtra(RecognizerIntent.EXTRA_PROMPT, "请说药名、用量和服药时间")) }
-                    .onFailure { error = "手机未安装语音识别服务，请使用文字输入" }
-            }, send = ::send, stop = { stream?.cancel() })
+                error = null
+                voice.start()
+            }, send = ::send, stop = { stream?.cancel() }, voiceActive = voice.busy)
     }) {
         if (target == null) item { Text("请在设置 → 助手偏好中选择计划对象。", color = Muted) }
         if (messages.isEmpty() && partial.isEmpty()) item {
             Text("可以发送文字或拍摄药盒的多个角度，助手会在信息充分时生成待确认草稿。", color = Muted)
         }
-        items(messages) { msg -> Panel(if (msg.role == "user") "你" else "AI助手") {
+        items(messages) { msg -> Panel(if (msg.role == "user") "你" else "AI助手", trailing = if (msg.role == "assistant") {
+            { IconButton({ speak(msg.content) }, Modifier.size(touchHeight)) { Icon(Icons.AutoMirrored.Filled.VolumeUp, "朗读") } }
+        } else null) {
             Text(msg.content)
             if (msg.imageDataUrls.isNotEmpty()) Text("[已附 ${msg.imageDataUrls.size} 张药品图片]", color = Muted)
-            if (msg.role == "assistant") Action("朗读", secondary = true) { speak(msg.content) }
         } }
         if (partial.isNotEmpty()) item { Panel("助手正在回复") { Text(partial) } }
         error?.let { message -> item { Text(message, color = Muted) } }
@@ -169,9 +180,11 @@ fun parseProposal(o: JSONObject, target: String): Proposal {
                 }
                 Text("尚未入库，请逐项核对实物。")
                 Sources(parseSources(draft.opt("sources")))
-                Action("打开核对并入库", enabled = !running && !state.busy) { intake = draft }
-                Action("丢弃草稿", secondary = true, enabled = !running) {
-                    medicineDrafts = medicineDrafts.filterNot { it.optString("draft_id") == draft.optString("draft_id") }
+                ActionRow {
+                    Action("打开核对并入库", enabled = !running && !state.busy) { intake = draft }
+                    Action("丢弃草稿", secondary = true, enabled = !running) {
+                        medicineDrafts = medicineDrafts.filterNot { it.optString("draft_id") == draft.optString("draft_id") }
+                    }
                 }
             }
         }
@@ -181,8 +194,10 @@ fun parseProposal(o: JSONObject, target: String): Proposal {
                 Text(p.draft.getString("medicine_name"), style = MaterialTheme.typography.titleMedium)
                 Text("${p.draft.get("amount")} ${p.draft.getString("unit")} · ${p.draft.getJSONArray("times").strings().joinToString(" / ")}")
                 Text("尚未保存。请核对医嘱、对象、日期、用量与优先药盒。")
-                Action("打开核对", enabled = !running && !state.busy) { if (p.operation == "pause") pause = p else editor = p }
-                Action("丢弃草稿", secondary = true, enabled = !running) { proposals = proposals.filterNot { it.id == p.id } }
+                ActionRow {
+                    Action("打开核对", enabled = !running && !state.busy) { if (p.operation == "pause") pause = p else editor = p }
+                    Action("丢弃草稿", secondary = true, enabled = !running) { proposals = proposals.filterNot { it.id == p.id } }
+                }
             }
         }
     }
@@ -200,6 +215,71 @@ fun parseProposal(o: JSONObject, target: String): Proposal {
     pause?.let { p -> Confirm("确认暂停正式计划", "暂停 ${p.draft.getString("medicine_name")}？此操作会更新日历与提醒。", { pause = null }) {
         vm.save("DELETE", "/plans/${p.planId}") { proposals = proposals.filterNot { it.id == p.id }; pause = null }
     } }
+}
+
+internal data class ChatVoiceInput(val busy: Boolean, val listening: Boolean, val start: () -> Unit, val cancel: () -> Unit)
+
+@Composable internal fun rememberChatVoiceInput(recognized: (String) -> Unit, reportError: (String) -> Unit): ChatVoiceInput {
+    val context = LocalContext.current
+    val lifecycleOwner = LocalLifecycleOwner.current
+    val scope = rememberCoroutineScope()
+    val speech = remember(context) { Speech(context) }
+    val onRecognized by rememberUpdatedState(recognized)
+    val onError by rememberUpdatedState(reportError)
+    var busy by remember { mutableStateOf(false) }
+    var listening by remember { mutableStateOf<Job?>(null) }
+    DisposableEffect(speech, lifecycleOwner) {
+        val observer = LifecycleEventObserver { _, event ->
+            if (event == Lifecycle.Event.ON_STOP) listening?.cancel()
+        }
+        lifecycleOwner.lifecycle.addObserver(observer)
+        onDispose {
+            lifecycleOwner.lifecycle.removeObserver(observer)
+            listening?.cancel()
+            speech.shutdown()
+        }
+    }
+    fun listen() {
+        listening = scope.launch {
+            try {
+                val result = speech.listen()
+                onRecognized(result)
+            } catch (e: CancellationException) { throw e }
+            catch (e: Exception) { onError(e.message ?: "语音识别失败，请使用文字输入") }
+            finally { busy = false; listening = null }
+        }
+    }
+    val microphone = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
+        if (granted) listen()
+        else { busy = false; onError("请允许录音权限后重试语音输入，也可以使用文字输入") }
+    }
+    fun fallback() {
+        if (speechRecognitionService(context) == null && !android.speech.SpeechRecognizer.isRecognitionAvailable(context)) {
+            busy = false
+            onError("手机未安装语音识别服务，请使用文字输入")
+        } else if (ContextCompat.checkSelfPermission(context, Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED) {
+            listen()
+        } else microphone.launch(Manifest.permission.RECORD_AUDIO)
+    }
+    val popup = rememberLauncherForActivityResult(ActivityResultContracts.StartActivityForResult()) { result ->
+        busy = false
+        if (result.resultCode == Activity.RESULT_OK) {
+            result.data?.getStringArrayListExtra(RecognizerIntent.EXTRA_RESULTS)?.firstOrNull { it.isNotBlank() }
+                ?.let(onRecognized)
+        } else if (result.resultCode != Activity.RESULT_CANCELED) {
+            busy = true
+            fallback()
+        }
+    }
+    return ChatVoiceInput(busy, listening != null, start = {
+        if (!busy) {
+            busy = true
+            val activity = speechRecognitionActivity(context)
+            if (activity == null) fallback()
+            else runCatching { popup.launch(speechRecognitionIntent().setComponent(activity)) }
+                .onFailure { fallback() }
+        }
+    }, cancel = { listening?.cancel() })
 }
 
 @Composable internal fun ChatLayout(revision: Any, composer: @Composable ColumnScope.() -> Unit, content: LazyListScope.() -> Unit) {
@@ -220,6 +300,7 @@ fun parseProposal(o: JSONObject, target: String): Proposal {
     text: String, change: (String) -> Unit, photos: List<PhotoAttachment>, suggestions: List<String>,
     running: Boolean, canSend: Boolean, photograph: () -> Unit, removePhoto: (Int) -> Unit,
     voice: () -> Unit, send: () -> Unit, stop: () -> Unit,
+    voiceActive: Boolean = false,
 ) {
     Surface(Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 8.dp).testTag("chat_composer"),
         shape = RoundedCornerShape(20.dp), border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant)) {
@@ -263,7 +344,7 @@ fun parseProposal(o: JSONObject, target: String): Proposal {
                     IconButton(photograph, Modifier.size(touchHeight), enabled = !running) { Icon(Icons.Default.PhotoCamera, "拍照或选择照片") }
                     if (photos.isNotEmpty()) Text("${photos.size} / $MAX_MEDICINE_PHOTOS", color = Muted, style = MaterialTheme.typography.bodySmall)
                     Spacer(Modifier.weight(1f))
-                    IconButton(voice, Modifier.size(touchHeight), enabled = !running) { Icon(Icons.Default.Mic, "语音输入") }
+                    IconButton(voice, Modifier.size(touchHeight), enabled = !running && !voiceActive) { Icon(Icons.Default.Mic, "语音输入") }
                     if (running) FilledIconButton(stop, Modifier.size(touchHeight)) { Icon(Icons.Default.Stop, "停止回复") }
                     else FilledIconButton(send, Modifier.size(touchHeight), enabled = canSend) { Icon(Icons.AutoMirrored.Filled.Send, "发送") }
                 }

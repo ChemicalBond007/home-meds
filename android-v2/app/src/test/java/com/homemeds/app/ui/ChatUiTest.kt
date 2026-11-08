@@ -11,6 +11,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.semantics.SemanticsProperties
 import androidx.compose.ui.text.AnnotatedString
+import androidx.compose.ui.text.TextRange
 import androidx.compose.ui.test.*
 import androidx.compose.ui.test.junit4.createComposeRule
 import androidx.compose.ui.unit.dp
@@ -19,6 +20,7 @@ import com.homemeds.app.User
 import com.homemeds.app.appTitle
 import com.homemeds.app.AppNavigationBar
 import com.homemeds.app.AssistantHeader
+import com.homemeds.app.appendRecognizedText
 import kotlinx.coroutines.awaitCancellation
 import kotlinx.coroutines.launch
 import org.junit.Assert.*
@@ -46,6 +48,25 @@ class ChatUiTest {
     private var camera = 0
     private var voice = 0
     private var stops = 0
+
+    @Test fun recognizedSpeechAppendsWithoutReplacingTypedTextAndRespectsLimit() {
+        assertEquals("请记录阿司匹林每天一次", appendRecognizedText("请记录", " 阿司匹林每天一次 "))
+        assertEquals("保留原文 ", appendRecognizedText("保留原文 ", " \n "))
+        assertEquals("再次听写", appendRecognizedText(appendRecognizedText("", "再次"), "听写"))
+        assertEquals("甲".repeat(5999) + "乙", appendRecognizedText("甲".repeat(5999), "乙丙"))
+        assertEquals(6000, appendRecognizedText("甲".repeat(6001), "").length)
+        assertEquals("甲".repeat(6000), appendRecognizedText("甲".repeat(6000), "乙"))
+    }
+
+    @Test fun recognizedSpeechAppearsAfterTheCurrentInputWithoutSending() {
+        text = "请记录"
+        screen()
+        compose.onNodeWithTag("chat_input").performTextInputSelection(TextRange(text.length))
+        compose.onNodeWithTag("chat_input").performTextInput("已有医嘱")
+        compose.runOnIdle { text = appendRecognizedText(text, " 每天一次 ") }
+        compose.onNodeWithTag("chat_input").assertTextContains("请记录已有医嘱每天一次")
+        compose.runOnIdle { assertEquals(0, sends) }
+    }
 
     @Test fun clearButtonIsToTheRightOfAssistantTitleAndDisabledWhileSaving() {
         var enabled by mutableStateOf(false)

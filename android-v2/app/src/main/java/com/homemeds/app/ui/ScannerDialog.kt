@@ -38,15 +38,18 @@ enum class ScanMode { MEDICINE, GROUP_JOIN }
     val accepted = remember(mode) { AtomicBoolean(false) }
     val view = remember { PreviewView(context).apply { implementationMode = PreviewView.ImplementationMode.COMPATIBLE } }
     Modal(if (mode == ScanMode.GROUP_JOIN) "扫描家庭分组码二维码" else "扫描药品条码 / 追溯码", dismiss) {
-        Text(if (mode == ScanMode.GROUP_JOIN) "请只对准管理台生成的一个分组码二维码。识别完全在本机进行，不会打开网址或更改服务器地址；识别后仍需确认注册。"
-            else "支持商品条码、GS1、Data Matrix 和二维码。请只对准一个药盒；同时发现商品码和追溯码时优先使用追溯码。识别完全在本机进行。")
-        if (permission) AndroidView({ view }, Modifier.fillMaxWidth().height(280.dp))
+        Text(if (mode == ScanMode.GROUP_JOIN) "只对准一个分组码二维码。本机识别，不打开网址或更改服务器；识别后仍需确认注册。"
+            else "只对准一个药盒，优先使用追溯码。支持商品条码、GS1、Data Matrix 和二维码，本机识别。",
+            color = Muted, style = androidx.compose.material3.MaterialTheme.typography.bodySmall)
+        if (permission) AndroidView({ view }, Modifier.fillMaxWidth().height(240.dp))
         else Action("允许相机扫码") { request.launch(Manifest.permission.CAMERA) }
         error?.let { Text(it, color = Red) }
         if (mode == ScanMode.GROUP_JOIN) Action("返回手动输入分组码", secondary = true, onClick = dismiss)
         else {
-            Field("也可手动输入或粘贴", manual, { manual = it })
-            Action("使用输入的码", enabled = manual.isNotBlank()) { if (accepted.compareAndSet(false, true)) onScanned(manual.trim()) }
+            Row(verticalAlignment = androidx.compose.ui.Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                Field("也可手动输入或粘贴", manual, { manual = it }, Modifier.weight(1f))
+                Action("使用输入的码", enabled = manual.isNotBlank()) { if (accepted.compareAndSet(false, true)) onScanned(manual.trim()) }
+            }
         }
     }
     DisposableEffect(permission, lifecycle, view, mode) {

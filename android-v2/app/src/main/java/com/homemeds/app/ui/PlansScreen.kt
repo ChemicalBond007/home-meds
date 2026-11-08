@@ -1,7 +1,13 @@
 package com.homemeds.app.ui
 
+import androidx.compose.foundation.horizontalScroll
+import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.unit.dp
 import com.homemeds.app.*
 import org.json.JSONArray
 import org.json.JSONObject
@@ -9,29 +15,52 @@ import java.time.LocalDate
 import java.time.LocalTime
 import java.util.UUID
 
+internal fun planSummary(p: Plan) = listOf("${Texts.amount(p.amount)} ${p.unit}",
+    if (p.frequency == "as_needed") "按需服用" else p.times.joinToString(" / "), Texts.meal(p.mealRelation))
+    .filter(String::isNotBlank).joinToString(" · ")
+
+/** Plan card: name and state chip, one summary line, edit / as-needed actions, and pause in "⋮". */
+@Composable internal fun PlanCard(p: Plan, state: AppState, showOwner: Boolean, edit: () -> Unit, pause: () -> Unit, record: () -> Unit) {
+    val asNeeded = p.enabled && p.frequency == "as_needed" && state.today >= p.startDate.toString() &&
+        (p.endDate == null || state.today <= p.endDate.toString())
+    Panel(p.medicineName, trailing = {
+        if (p.enabled) StatusChip("已启用") else StatusChip("已暂停", Muted)
+        if (p.enabled) MoreMenu(listOf(MenuAction("暂停计划", !state.busy, danger = true, onClick = pause)))
+    }) {
+        Text(planSummary(p))
+        Text(listOfNotNull(if (showOwner) p.username.ifBlank { null } ?: state.members.find { it.id == p.userId }?.username else null,
+            "${p.startDate} 起" + (p.endDate?.let { " · 至 $it" } ?: "")).joinToString(" · "), color = Muted, style = MaterialTheme.typography.bodySmall)
+        if (p.notes.isNotBlank()) Text(p.notes, color = Muted, style = MaterialTheme.typography.bodySmall)
+        p.preferredStockItemId?.let { id -> Text("优先药盒：" + (state.stock.find { it.id == id }?.let { boxLabel(it, state.today) } ?: "已不可用，请核对"),
+            style = MaterialTheme.typography.bodySmall) }
+        ActionRow {
+            Action("编辑计划", secondary = true, enabled = !state.busy, onClick = edit)
+            if (asNeeded) Action("记录一次按需服药", enabled = !state.busy, onClick = record)
+        }
+    }
+}
+
 @Composable fun PlansScreen(vm: AppViewModel, state: AppState, dose: (DoseRequest) -> Unit) {
     var editor by remember { mutableStateOf<JSONObject?>(null) }
     var editId by remember { mutableStateOf<String?>(null) }
     var pause by remember { mutableStateOf<Plan?>(null) }
-    Page("吃药计划") {
-        Action("新建吃药计划", enabled = state.groupId != null && state.members.isNotEmpty() && !state.busy) { editId = null; editor = JSONObject() }
-        state.members.forEach { member ->
-            val plans = state.plans.filter { it.userId == member.id }
-            if (plans.isNotEmpty()) Text(member.username, style = MaterialTheme.typography.titleMedium)
-            plans.forEach { p ->
-                Panel(p.medicineName) {
-                    Text("${Texts.amount(p.amount)} ${p.unit} · ${Texts.meal(p.mealRelation)}")
-                    Text(if (p.frequency == "as_needed") "按需服用" else p.times.joinToString(" / "))
-                    Text("${p.startDate} 起 · ${if (p.enabled) "已启用" else "已暂停"}")
-                    if (p.notes.isNotBlank()) Text(p.notes)
-                    p.preferredStockItemId?.let { id -> Text("优先药盒：" + (state.stock.find { it.id == id }?.let { boxLabel(it, state.today) } ?: "已不可用，请核对")) }
-                    Action("编辑计划", secondary = true, enabled = !state.busy) { editId = p.id; editor = p.body() }
-                    if (p.enabled) Action("暂停计划", secondary = true, enabled = !state.busy) { pause = p }
-                    if (p.enabled && p.frequency == "as_needed" && state.today >= p.startDate.toString() &&
-                        (p.endDate == null || state.today <= p.endDate.toString())) Action("记录一次按需服药", enabled = !state.busy) {
-                        dose(DoseRequest(p, state.today, "as-needed:${UUID.randomUUID()}"))
-                    }
-                }
+    var member by remember { mutableStateOf<String?>(null) }
+    val owners = state.members.filter { m -> state.plans.any { it.userId == m.id } }
+    Page {
+        Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+            Text("共 ${state.plans.size} 个计划", Modifier.weight(1f), color = Muted)
+            Action("新建吃药计划", enabled = state.groupId != null && state.members.isNotEmpty() && !state.busy) { editId = null; editor = JSONObject() }
+        }
+        if (owners.size > 1) Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            FilterChip(member == null, { member = null }, label = { Text("全部") }, modifier = Modifier.heightIn(min = touchHeight))
+            owners.forEach { m ->
+                FilterChip(member == m.id, { member = m.id }, label = { Text(m.username) }, modifier = Modifier.heightIn(min = touchHeight))
+            }
+        }
+        state.members.filter { member == null || it.id == member }.forEach { m ->
+            state.plans.filter { it.userId == m.id }.forEach { p ->
+                PlanCard(p, state, showOwner = member == null && owners.size > 1, edit = { editId = p.id; editor = p.body() },
+                    pause = { pause = p }, record = { dose(DoseRequest(p, state.today, "as-needed:${UUID.randomUUID()}")) })
             }
         }
         if (state.plans.isEmpty()) Panel { Text("还没有服药计划。请按医嘱记录，或使用 AI 助手整理待确认草稿。") }
@@ -66,40 +95,55 @@ import java.util.UUID
     var error by remember { mutableStateOf<String?>(null) }
     val boxes = availableBoxes(state.stock, productId.takeIf(String::isNotEmpty))
     Modal("核对吃药计划", dismiss) {
-        Text("只记录医嘱或说明书明确的安排，不会自动推荐药物或用量。", color = Muted)
+        Text("只记录医嘱或说明书明确的安排，不会自动推荐药物或用量。", color = Muted, style = MaterialTheme.typography.bodySmall)
         Picker("计划对象", member, state.members.map { it.id to it.username }, { member = it })
         Picker("药品", productId, listOf("" to "手动填写药名（不扣库存）") + state.products.map { it.id to it.name }, {
             productId = it; preferred = ""
             state.products.find { p -> p.id == it }?.let { p -> name = p.name; unit = p.unit }
         })
         Field("药名", name, { name = it }, enabled = productId.isEmpty())
-        Field("每次用量", amount, { amount = it }, number = true)
-        Field("用量单位", unit, { unit = it }, enabled = productId.isEmpty())
-        Picker("频率", frequency, listOf("daily" to "每天", "weekly" to "每周", "interval" to "每隔几天", "as_needed" to "按需服药"), { frequency = it })
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            Field("每次用量", amount, { amount = it }, Modifier.weight(1f), number = true)
+            Field("用量单位", unit, { unit = it }, Modifier.weight(1f), enabled = productId.isEmpty())
+        }
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            Picker("频率", frequency, listOf("daily" to "每天", "weekly" to "每周", "interval" to "每隔几天", "as_needed" to "按需服药"),
+                { frequency = it }, modifier = Modifier.weight(1f))
+            Picker("餐时关系", meal, listOf("none" to "不限", "before" to "饭前", "after" to "饭后", "with" to "随餐"), { meal = it },
+                modifier = Modifier.weight(1f))
+        }
         if (frequency != "as_needed") {
             Field("服药时间 HH:mm，多个用逗号分隔", times, { times = it })
             state.groups.find { it.id == state.groupId }?.mealTimes?.let { meals ->
-                listOf("morning" to "早餐", "noon" to "午餐", "evening" to "晚餐", "bedtime" to "睡前").forEach { (key, label) ->
-                    meals.nullable(key)?.let { t -> Action("$label $t", secondary = true) {
-                        times = (times.split(',', '，').map(String::trim).filter(String::isNotBlank) + t).distinct().sorted().joinToString(",")
-                    } }
+                ActionRow {
+                    listOf("morning" to "早餐", "noon" to "午餐", "evening" to "晚餐", "bedtime" to "睡前").forEach { (key, label) ->
+                        meals.nullable(key)?.let { t -> AssistChip(onClick = {
+                            times = (times.split(',', '，').map(String::trim).filter(String::isNotBlank) + t).distinct().sorted().joinToString(",")
+                        }, label = { Text("$label $t") }, modifier = Modifier.heightIn(min = touchHeight)) }
+                    }
                 }
             }
         }
-        if (frequency == "weekly") listOf("周日", "周一", "周二", "周三", "周四", "周五", "周六").forEachIndexed { i, day ->
-            Check(day, i in weekdays, { weekdays = if (it) weekdays + i else weekdays - i })
+        if (frequency == "weekly") ActionRow {
+            listOf("周日", "周一", "周二", "周三", "周四", "周五", "周六").forEachIndexed { i, day ->
+                FilterChip(i in weekdays, { weekdays = if (i in weekdays) weekdays - i else weekdays + i }, label = { Text(day) },
+                    modifier = Modifier.heightIn(min = touchHeight))
+            }
         }
         if (frequency == "interval") Field("间隔天数（1–365）", interval, { interval = it }, number = true)
-        Field("开始日期 YYYY-MM-DD", start, { start = it })
-        Field("结束日期（可留空）", end, { end = it })
-        Picker("餐时关系", meal, listOf("none" to "不限", "before" to "饭前", "after" to "饭后", "with" to "随餐"), { meal = it })
-        if (productId.isNotEmpty()) Picker("优先药盒（请核对有效期）", preferred,
-            listOf("" to "不指定，下次手动核对") + boxes.map { it.id to boxLabel(it, state.today) } +
-                if (preferred.isNotBlank() && boxes.none { it.id == preferred }) listOf(preferred to "原优先药盒不可用（保留原偏好）") else emptyList(),
-            { preferred = it })
-        Field("备注", notes, { notes = it }, multiline = true)
-        Check("启用计划", enabled, { enabled = it })
-        Check("超过 30 分钟未记录时提醒家人", notify, { notify = it })
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            Field("开始日期 YYYY-MM-DD", start, { start = it }, Modifier.weight(1f))
+            Field("结束日期（可留空）", end, { end = it }, Modifier.weight(1f))
+        }
+        Collapsible("更多选项", initiallyOpen = notes.isNotBlank() || preferred.isNotBlank() || !enabled || notify) {
+            if (productId.isNotEmpty()) Picker("优先药盒（请核对有效期）", preferred,
+                listOf("" to "不指定，下次手动核对") + boxes.map { it.id to boxLabel(it, state.today) } +
+                    if (preferred.isNotBlank() && boxes.none { it.id == preferred }) listOf(preferred to "原优先药盒不可用（保留原偏好）") else emptyList(),
+                { preferred = it })
+            Field("备注", notes, { notes = it }, multiline = true)
+            Toggle("启用计划", enabled, { enabled = it })
+            Toggle("超过 30 分钟未记录时提醒家人", notify, { notify = it })
+        }
         error?.let { Text(it, color = Red) }
         Action("确认保存", enabled = !state.busy) {
             try {

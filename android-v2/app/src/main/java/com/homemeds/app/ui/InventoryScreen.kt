@@ -2,8 +2,13 @@ package com.homemeds.app.ui
 
 import android.content.Intent
 import android.net.Uri
+import androidx.compose.foundation.layout.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.unit.dp
 import androidx.compose.ui.platform.LocalContext
 import com.homemeds.app.*
 import com.homemeds.app.net.AiAgent
@@ -12,12 +17,33 @@ import org.json.JSONArray
 import org.json.JSONObject
 import java.net.URLEncoder
 
+internal fun boxStatus(item: StockItem, today: String): Pair<String, androidx.compose.ui.graphics.Color> = when {
+    item.data.optString("status") == "discarded" -> "报废" to Muted
+    item.data.optString("status") == "empty" || (item.data.optString("status") == "active" && item.remaining <= 0) -> "用尽" to Muted
+    item.expiry?.let { it < today } == true -> "已过期" to Red
+    else -> "在库" to Green
+}
+
+/** Box card: name, label and status, with the admin edit button visible and stock moves in "⋮". */
+@Composable internal fun BoxCard(item: StockItem, today: String, admin: Boolean, busy: Boolean, edit: () -> Unit, move: (String) -> Unit) {
+    val (label, color) = boxStatus(item, today)
+    Panel(item.name, warning = item.expiry?.let { it < today } == true, trailing = {
+        StatusChip(label, color)
+        if (item.available) MoreMenu(listOf(MenuAction("用掉", !busy) { move("out") },
+            MenuAction("移到另一药箱", !busy) { move("move") }, MenuAction("报废", !busy, danger = true) { move("discard") }))
+    }) {
+        Text(boxLabel(item, today), style = MaterialTheme.typography.bodySmall)
+        if (admin) Action("修改药盒资料", secondary = true, enabled = !busy, onClick = edit)
+    }
+}
+
 @Composable fun InventoryScreen(vm: AppViewModel, state: AppState) {
     var tab by remember { mutableIntStateOf(0) }
     var search by remember { mutableStateOf("") }
     var status by remember { mutableStateOf("active") }
     var intake by remember { mutableStateOf(false) }
     var product by remember { mutableStateOf<Product?>(null) }
+    var detail by remember { mutableStateOf<Product?>(null) }
     var codes by remember { mutableStateOf<List<String>>(emptyList()) }
     var box by remember { mutableStateOf<StockItem?>(null) }
     var movement by remember { mutableStateOf<Pair<StockItem, String>?>(null) }
@@ -26,52 +52,58 @@ import java.net.URLEncoder
         if (tab == 2) try { history = vm.list("/movements").objects() }
         catch (e: CancellationException) { throw e } catch (_: Exception) { vm.error("无法读取库存流水") }
     }
-    Page("家庭药箱") {
-        Panel {
-            Text("在库 ${state.stock.count { it.available }} 盒 · 药品 ${state.products.size} 种")
-            Text("余量按各药品基本单位记录，请核对实物。")
+    Page {
+        Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            Column(Modifier.weight(1f)) {
+                Text("在库 ${state.stock.count { it.available }} 盒 · ${state.products.size} 种", fontWeight = FontWeight.SemiBold)
+                Text("余量按基本单位记录，请核对实物", color = Muted, style = MaterialTheme.typography.bodySmall)
+            }
             Action("药品入库", enabled = state.groupId != null && !state.busy) { intake = true }
         }
         Tabs(listOf("在库药盒", "药品资料", "库存流水"), tab) { tab = it }
-        Field("搜索药名、厂家或追溯码", search, { search = it })
+        Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            Field("搜索药名、厂家或追溯码", search, { search = it }, Modifier.weight(1f))
+            if (tab == 0) ChipPicker(status, listOf("active" to "在库", "empty" to "用尽", "discarded" to "报废", "" to "全部"), { status = it },
+                description = "状态筛选")
+        }
         when (tab) {
-            0 -> {
-                Picker("状态", status, listOf("active" to "在库", "empty" to "用尽", "discarded" to "报废", "" to "全部"), { status = it })
-                state.stock.filter { (status.isEmpty() || it.data.optString("status") == status) &&
-                    (it.name.contains(search, true) || it.trace.orEmpty().contains(search)) }.forEach { item ->
-                    Panel(item.name, warning = item.expiry?.let { it < state.today } == true) {
-                        Text(boxLabel(item, state.today))
-                        if (item.available) {
-                            Action("用掉", secondary = true, enabled = !state.busy) { movement = item to "out" }
-                            Action("移到另一药箱", secondary = true, enabled = !state.busy) { movement = item to "move" }
-                            Action("报废", secondary = true, enabled = !state.busy) { movement = item to "discard" }
-                        }
-                        if (state.user?.admin == true) Action("修改药盒资料", secondary = true, enabled = !state.busy) { box = item }
-                    }
-                }
+            0 -> state.stock.filter { (status.isEmpty() || it.data.optString("status") == status) &&
+                (it.name.contains(search, true) || it.trace.orEmpty().contains(search)) }.forEach { item ->
+                BoxCard(item, state.today, state.user?.admin == true, state.busy, edit = { box = item }) { movement = item to it }
             }
             1 -> state.products.filter { it.data.toString().contains(search, true) }.forEach { p ->
-                Panel(p.name) {
-                    Text("${p.data.nullable("specification").orEmpty()} · ${p.data.nullable("manufacturer").orEmpty()}")
-                    Text("每盒 ${Texts.amount(p.size)} ${p.unit} · ${if (p.data.optString("status") == "pending") "待人工核对" else "已核对"}")
-                    p.data.nullable("generic_name")?.let { Text("通用名：$it") }
-                    p.data.nullable("indications")?.let { Text("适应症：$it") }
-                    p.data.nullable("precautions")?.let { Text("注意事项：$it") }
-                    Sources(parseSources(p.data.opt("sources")))
-                    if (state.user?.admin == true) Action("编辑资料及条码映射", secondary = true, enabled = !state.busy) {
-                        vm.perform { codes = vm.list("/products/${p.id}/codes").strings(); product = p }
-                    }
+                Panel(p.name, onClick = { detail = p }, trailing = {
+                    if (p.data.optString("status") == "pending") StatusChip("待人工核对", Amber) else StatusChip("已核对")
+                }) {
+                    Text(listOfNotNull(p.data.nullable("specification"), p.data.nullable("manufacturer"), "每盒 ${Texts.amount(p.size)} ${p.unit}")
+                        .joinToString(" · "), color = Muted, style = MaterialTheme.typography.bodySmall)
                 }
             }
-            2 -> history.filter { it.toString().contains(search, true) }.forEach { row ->
-                Panel(row.optString("name")) {
-                    Text("${movementLabel(row.optString("type"))} · ${row.opt("amount")} · ${row.optString("username")}")
-                    Text(row.optString("created_at"), color = Muted)
+            2 -> RowGroup {
+                val rows = history.filter { it.toString().contains(search, true) }
+                rows.forEachIndexed { i, row ->
+                    if (i > 0) RowDivider()
+                    Column(Modifier.fillMaxWidth().padding(horizontal = 14.dp, vertical = 8.dp)) {
+                        Text("${row.optString("name")} · ${movementLabel(row.optString("type"))} ${row.opt("amount")}", fontWeight = FontWeight.SemiBold)
+                        Text("${row.optString("username")} · ${row.optString("created_at")}", color = Muted, style = MaterialTheme.typography.bodySmall)
+                    }
                 }
+                if (rows.isEmpty()) Text("暂无库存流水", Modifier.padding(14.dp), color = Muted)
             }
         }
     }
     if (intake) IntakeDialog(vm, state) { intake = false }
+    detail?.let { p -> Modal(p.name, { detail = null }) {
+        Text(listOfNotNull(p.data.nullable("specification"), p.data.nullable("manufacturer")).joinToString(" · "), color = Muted)
+        Text("每盒 ${Texts.amount(p.size)} ${p.unit} · ${if (p.data.optString("status") == "pending") "待人工核对" else "已核对"}")
+        p.data.nullable("generic_name")?.let { Text("通用名：$it") }
+        p.data.nullable("indications")?.let { Text("适应症：$it") }
+        p.data.nullable("precautions")?.let { Text("注意事项：$it") }
+        Sources(parseSources(p.data.opt("sources")))
+        if (state.user?.admin == true) Action("编辑资料及条码映射", secondary = true, enabled = !state.busy) {
+            vm.perform { codes = vm.list("/products/${p.id}/codes").strings(); detail = null; product = p }
+        }
+    } }
     product?.let { p -> ProductEditor(p.data, codes, state.busy, { product = null }) { body ->
         vm.save("PUT", "/products/${p.id}", body) { product = null }
     } }
@@ -120,10 +152,13 @@ fun parseSources(value: Any?): List<JSONObject> = runCatching {
 
 @Composable fun Sources(sources: List<JSONObject>) {
     val context = LocalContext.current
-    sources.forEach { s ->
-        val url = s.optString("url")
-        if (runCatching { UrlPolicy.publicUrl(url) }.isSuccess) Action(s.optString("title", url), secondary = true) {
-            runCatching { context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(url))) }
+    val public = sources.filter { runCatching { UrlPolicy.publicUrl(it.optString("url")) }.isSuccess }
+    if (public.isNotEmpty()) ActionRow {
+        public.forEach { s ->
+            val url = s.optString("url")
+            Action(s.optString("title", url), secondary = true) {
+                runCatching { context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(url))) }
+            }
         }
     }
 }
@@ -257,42 +292,56 @@ internal fun prepareIntakeDraft(draft: JSONObject, products: List<Product>, stoc
         catch (_: Exception) { error = "条码解析失败，可重试或手动录入" }
     }
     Modal("药品入库 · 第 $step 步", dismiss) {
+        val idle = !looking && !state.busy
         if (step == 1) {
-            Field("条码或追溯码（可留空手工入库）", code, { code = it; checked = false }, enabled = !looking && !state.busy)
-            Action("相机扫码", secondary = true, enabled = !looking && !state.busy) { scan = true }
-            Action("拍药品容器添加药品", secondary = true, enabled = !looking && !state.busy) { photoDialog = true }
-            if (photos.isNotEmpty()) Text("本次识药已附 ${photos.size} 张多角度照片，可重新打开拍照入口补拍或移除。")
-            Action("查询条码", secondary = true, enabled = !looking && !state.busy && code.isNotBlank()) { vm.perform { resolve(code) } }
-            Picker("选择已有药品", product, listOf("" to "请选择") + state.products.map { it.id to it.name }, {
-                product = it; size = state.products.find { p -> p.id == it }?.size?.let(Texts::amount).orEmpty()
-            }, enabled = !looking && !state.busy)
-            Action("新建药品资料", secondary = true, enabled = !looking && !state.busy) { newProduct = JSONObject() }
-            if (recognized != null && product.isNotBlank()) Action("按识别结果新建药品资料", secondary = true, enabled = !looking && !state.busy) {
+            Field("条码或追溯码（可留空手工入库）", code, { code = it; checked = false }, enabled = idle)
+            ActionRow {
+                Action("相机扫码", secondary = true, enabled = idle) { scan = true }
+                Action("拍照识药", secondary = true, enabled = idle) { photoDialog = true }
+                Action("查询条码", secondary = true, enabled = idle && code.isNotBlank()) { vm.perform { resolve(code) } }
+            }
+            if (photos.isNotEmpty()) Text("本次识药已附 ${photos.size} 张多角度照片，可重新打开拍照入口补拍或移除。",
+                color = Muted, style = MaterialTheme.typography.bodySmall)
+            Row(verticalAlignment = Alignment.Bottom, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                Picker("选择已有药品", product, listOf("" to "请选择") + state.products.map { it.id to it.name }, {
+                    product = it; size = state.products.find { p -> p.id == it }?.size?.let(Texts::amount).orEmpty()
+                }, enabled = idle, modifier = Modifier.weight(1f))
+                Action("新建药品资料", secondary = true, enabled = idle) { newProduct = JSONObject() }
+            }
+            if (recognized != null && product.isNotBlank()) Action("按识别结果新建药品资料", secondary = true, enabled = idle) {
                 advanceAfterCreate = true; newProduct = recognized
             }
-            Field("AI 检索药名 / 厂家 / 条码", query, { query = it }, enabled = !looking && !state.busy)
-            Text("AI 仅预填公开资料或照片可见文字，必须逐项核对药名、数量、有效期和批号。", color = Red)
-            Action("AI 检索预填", enabled = !looking && !state.busy && query.isNotBlank()) {
-                lookupMedicine()
+            Collapsible("AI 检索（可选）", open = looking || progress.isNotBlank()) {
+                Field("AI 检索药名 / 厂家 / 条码", query, { query = it }, enabled = idle)
+                Text("AI 仅预填公开资料或照片可见文字，必须逐项核对药名、数量、有效期和批号。", color = Red, style = MaterialTheme.typography.bodySmall)
+                ActionRow {
+                    Action("AI 检索预填", enabled = idle && query.isNotBlank()) { lookupMedicine() }
+                    if (looking) Action("取消查询", secondary = true) { lookup?.cancel() }
+                }
+                if (progress.isNotBlank()) Text(progress, style = MaterialTheme.typography.bodySmall)
             }
-            if (looking) Action("取消查询", secondary = true) { lookup?.cancel() }
-            if (progress.isNotBlank()) Text(progress)
+            if (looking && progress.isBlank()) Text("正在识别…", color = Muted)
             if (duplicate) Text("该追溯码对应已入库药盒，可以查询，但不能重复入库。", color = Muted)
-            Action("下一步：核对药盒", enabled = product.isNotBlank() && !duplicate && !looking && !state.busy) { step = 2; error = null }
+            Action("下一步：核对药盒", enabled = product.isNotBlank() && !duplicate && idle) { step = 2; error = null }
         } else {
-            Text(state.products.find { it.id == product }?.name ?: "新建药品")
+            Text(state.products.find { it.id == product }?.name ?: "新建药品", style = MaterialTheme.typography.titleMedium)
             Picker("存放药箱", warehouse, state.warehouses.map { it.getString("id") to it.getString("name") }, { warehouse = it; checked = false })
-            PackagePhotoControl(state.groupId, !looking && !state.busy, { looking = it }) { details ->
+            PackagePhotoControl(state.groupId, idle, { looking = it }) { details ->
                 details.nullable("expiry_date")?.let { expiry = it }
                 details.nullable("batch_number")?.let { batch = it }
                 checked = false
             }
-            ExpiryField(expiry, { expiry = it; checked = false }, enabled = !looking && !state.busy)
-            Field("批号（可空）", batch, { batch = it; checked = false }, enabled = !looking && !state.busy)
-            Field("每盒数量", size, { size = it; checked = false }, number = true)
-            Field("盒数（追溯码只能一盒）", packages, { packages = it; checked = false }, number = true)
-            Check("已核对实物药名、规格、数量、有效期和存放药箱", checked, { checked = it }, enabled = !looking && !state.busy)
-            Action("确认入库", enabled = checked && !duplicate && !looking && !state.busy) {
+            ExpiryField(expiry, { expiry = it; checked = false }, enabled = idle)
+            Field("批号（可空）", batch, { batch = it; checked = false }, enabled = idle)
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                Field("每盒数量", size, { size = it; checked = false }, Modifier.weight(1f), number = true)
+                Field("盒数", packages, { packages = it; checked = false }, Modifier.weight(1f), number = true)
+            }
+            Text("追溯码只能一盒。", color = Muted, style = MaterialTheme.typography.bodySmall)
+            Check("已核对实物药名、规格、数量、有效期和存放药箱", checked, { checked = it }, enabled = idle)
+            ActionRow {
+                Action("上一步", secondary = true, enabled = idle) { step = 1 }
+                Action("确认入库", enabled = checked && !duplicate && idle) {
                 try {
                     require(!duplicate) { "该追溯码药盒已入库，不能重复添加" }
                     require(warehouse.isNotBlank()) { "请选择药箱" }
@@ -307,7 +356,7 @@ internal fun prepareIntakeDraft(draft: JSONObject, products: List<Product>, stoc
                         "units_per_package" to n, "packages" to count)) { onSaved(); dismiss() }
                 } catch (e: Exception) { error = e.message ?: "请核对填写内容" }
             }
-            Action("上一步", secondary = true, enabled = !looking && !state.busy) { step = 1 }
+            }
         }
         error?.let { Text(it, color = Red) }
     }

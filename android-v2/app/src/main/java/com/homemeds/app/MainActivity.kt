@@ -12,12 +12,16 @@ import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.*
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.Chat
+import androidx.compose.material.icons.automirrored.filled.VolumeUp
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.navigation.NavDestination.Companion.hierarchy
 import androidx.lifecycle.viewmodel.compose.viewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.navigation.compose.*
@@ -33,11 +37,38 @@ internal fun appTitle(route: String) = if (route == "chat") "赛博药箱AI助�
 
 private val appScreens = listOf("home" to "今日", "inventory" to "药箱", "chat" to "助手", "plans" to "计划", "settings" to "设置")
 
-@Composable internal fun AssistantHeader(canClear: Boolean, clear: () -> Unit) {
+@Composable internal fun AssistantHeader(canClear: Boolean, family: @Composable () -> Unit = {}, clear: () -> Unit) {
     Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-        Text(appTitle("chat"), Modifier.weight(1f), style = MaterialTheme.typography.titleLarge)
+        Text(appTitle("chat"), Modifier.weight(1f), style = MaterialTheme.typography.titleLarge, maxLines = 1, overflow = TextOverflow.Ellipsis)
+        family()
         IconButton(clear, Modifier.size(touchHeight), enabled = canClear) {
             Icon(Icons.Default.DeleteSweep, "清空对话历史")
+        }
+    }
+}
+
+/** One-row top bar: title (with a member subtitle), optional family switcher, then icon actions. */
+@Composable internal fun AppTopBar(title: String, subtitle: String?, family: @Composable () -> Unit = {},
+    speak: () -> Unit, refresh: () -> Unit, refreshEnabled: Boolean) {
+    Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+        Column(Modifier.weight(1f)) {
+            Text(title, style = MaterialTheme.typography.titleLarge, maxLines = 1, overflow = TextOverflow.Ellipsis)
+            subtitle?.let { Text(it, color = Muted, style = MaterialTheme.typography.bodySmall, maxLines = 1, overflow = TextOverflow.Ellipsis) }
+        }
+        family()
+        IconButton(speak, Modifier.size(touchHeight)) { Icon(Icons.AutoMirrored.Filled.VolumeUp, "朗读今日清单") }
+        IconButton(refresh, Modifier.size(touchHeight), enabled = refreshEnabled) { Icon(Icons.Default.Refresh, "刷新今日清单") }
+    }
+}
+
+@Composable internal fun Banner(text: String, error: Boolean, closeLabel: String, close: () -> Unit) {
+    Surface(Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 4.dp), shape = MaterialTheme.shapes.medium,
+        color = if (error) Color(0xFFFBEAEA) else Color(0xFFEDF2E9)) {
+        Row(Modifier.padding(start = 12.dp), verticalAlignment = Alignment.CenterVertically) {
+            Icon(if (error) Icons.Default.ErrorOutline else Icons.Default.Info, null, tint = if (error) Red else Green)
+            Text(text, Modifier.weight(1f).padding(horizontal = 8.dp, vertical = 6.dp), style = MaterialTheme.typography.bodySmall,
+                color = if (error) Red else Ink)
+            IconButton(close, Modifier.size(touchHeight)) { Icon(Icons.Default.Close, closeLabel) }
         }
     }
 }
@@ -103,7 +134,7 @@ class MainActivity : ComponentActivity() {
 @Composable private fun NativeApp(vm: AppViewModel, state: AppState, target: NotificationTarget?, consumed: () -> Unit) {
     val nav = rememberNavController()
     val back by nav.currentBackStackEntryAsState()
-    val route = back?.destination?.route ?: "home"
+    val route = back?.destination?.hierarchy?.mapNotNull { it.route }?.firstOrNull { r -> appScreens.any { it.first == r } } ?: "home"
     val speak = LocalSpeak.current
     var dose by remember(state.user?.id, state.groupId) { mutableStateOf<DoseRequest?>(null) }
     var clearChat by remember(state.user?.id, state.groupId) { mutableStateOf(false) }
@@ -127,14 +158,15 @@ class MainActivity : ComponentActivity() {
         consumed()
     }
     Scaffold(containerColor = Cream, topBar = {
-        if (state.user != null && !state.bindingOnly) Column(Modifier.padding(horizontal = 16.dp, vertical = 8.dp).statusBarsPadding()) {
-            if (route == "chat") AssistantHeader(!state.busy) { clearChat = true }
-            else Row {
-                Text(appTitle(route), Modifier.weight(1f), style = MaterialTheme.typography.titleLarge)
-                Action("朗读", secondary = true) { speak("今天 ${state.today}。" + state.todos.filter { it.plan.userId == state.user.id }.joinToString("。") { "${it.time} ${it.plan.medicineName} ${Texts.amount(it.plan.amount)}${it.plan.unit}，${stateLabel(it.state)}" }) }
+        if (state.user != null && !state.bindingOnly) Column(Modifier.statusBarsPadding().padding(start = 16.dp, end = 4.dp, top = 4.dp, bottom = 2.dp)) {
+            val family: @Composable () -> Unit = {
+                if (state.user.admin) ChipPicker(state.groupId, state.groups.map { it.id to it.name }, vm::selectGroup, !state.busy, "切换家庭")
             }
-            if (state.user.admin) Picker("当前家庭", state.groupId, state.groups.map { it.id to it.name }, vm::selectGroup, !state.busy)
-            else Text("${state.groups.find { it.id == state.groupId }?.name.orEmpty()} · ${state.user.username}", color = Muted)
+            if (route == "chat") AssistantHeader(!state.busy, family) { clearChat = true }
+            else AppTopBar(appTitle(route),
+                if (state.user.admin) null else "${state.groups.find { it.id == state.groupId }?.name.orEmpty()} · ${state.user.username}",
+                family, speak = { speak("今天 ${state.today}。" + state.todos.filter { it.plan.userId == state.user.id }.joinToString("。") { "${it.time} ${it.plan.medicineName} ${Texts.amount(it.plan.amount)}${it.plan.unit}，${stateLabel(it.state)}" }) },
+                refresh = vm::refresh, refreshEnabled = !state.busy)
         }
     }, bottomBar = {
         if (state.user != null && !state.bindingOnly) AppNavigationBar(route, state.user.elderly) { id ->
@@ -143,13 +175,8 @@ class MainActivity : ComponentActivity() {
     }) { padding ->
         Column(Modifier.fillMaxSize().padding(padding)) {
             if (state.busy || state.loading) LinearProgressIndicator(Modifier.fillMaxWidth(), color = Green)
-            state.error?.let { Row(Modifier.fillMaxWidth().padding(12.dp)) {
-                Text(it, Modifier.weight(1f), color = if (route == "chat") Muted else Red)
-                Action("关闭", secondary = true) { vm.error(null) }
-            } }
-            state.notice?.let { Row(Modifier.fillMaxWidth().padding(12.dp)) {
-                Text(it, Modifier.weight(1f)); Action("知道了", secondary = true) { vm.notice(null) }
-            } }
+            state.error?.let { Banner(it, error = route != "chat", closeLabel = "关闭") { vm.error(null) } }
+            state.notice?.let { Banner(it, error = false, closeLabel = "知道了") { vm.notice(null) } }
             if (state.loading) Text("正在恢复登录…", Modifier.padding(24.dp))
             else if (state.user == null || state.bindingOnly) AuthScreen(vm, state)
             else key(state.user.id, state.groupId) {
@@ -158,7 +185,7 @@ class MainActivity : ComponentActivity() {
                     composable("inventory") { InventoryScreen(vm, state) }
                     composable("plans") { PlansScreen(vm, state) { dose = it } }
                     composable("chat") { ChatScreen(vm, state, clearChat) { clearChat = false } }
-                    composable("settings") { SettingsScreen(vm, state) }
+                    settingsGraph(nav, vm, state)
                 }
             }
         }

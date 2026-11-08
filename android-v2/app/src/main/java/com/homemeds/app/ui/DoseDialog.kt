@@ -1,7 +1,12 @@
 package com.homemeds.app.ui
 
+import androidx.compose.foundation.layout.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.unit.dp
 import com.homemeds.app.*
 import com.homemeds.app.net.ApiException
 import kotlinx.coroutines.CancellationException
@@ -48,15 +53,18 @@ import org.json.JSONObject
     }
     Modal(if (step == 1) "第 1 步：核对时间和用量" else "第 2 步：核对药盒实物", dismiss) {
         Panel {
-            Text(request.plan.medicineName, style = MaterialTheme.typography.titleLarge)
-            Text("${request.date} · ${if (request.time.startsWith("as-needed:")) "按需服药" else "计划 ${request.time}"}")
-            Text("计划用量 ${Texts.amount(request.plan.amount)} ${request.plan.unit} · ${Texts.meal(request.plan.mealRelation)}")
-            if (request.plan.notes.isNotBlank()) Text(request.plan.notes)
+            Text(request.plan.medicineName, style = MaterialTheme.typography.titleMedium)
+            Text(listOf(request.date, if (request.time.startsWith("as-needed:")) "按需服药" else "计划 ${request.time}",
+                "计划用量 ${Texts.amount(request.plan.amount)} ${request.plan.unit}", Texts.meal(request.plan.mealRelation))
+                .filter(String::isNotBlank).joinToString(" · "), style = MaterialTheme.typography.bodySmall)
+            if (request.plan.notes.isNotBlank()) Text(request.plan.notes, color = Muted, style = MaterialTheme.typography.bodySmall)
         }
         if (step == 1) {
-            Field("实际用量（${request.plan.unit}）", amount, { amount = it }, number = true)
-            Field("实际服药时间 HH:mm", time, { time = it })
-            Text("只记录已经核对的实际服药，不要根据提醒重复服药。", color = Red)
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                Field("实际用量（${request.plan.unit}）", amount, { amount = it }, Modifier.weight(1f), number = true)
+                Field("时间 HH:mm", time, { time = it }, Modifier.weight(1f))
+            }
+            Text("只记录已经核对的实际服药，不要根据提醒重复服药。", color = Red, style = MaterialTheme.typography.bodySmall)
             Action("下一步：核对药盒", enabled = !state.busy) {
                 val n = amount.toDoubleOrNull()
                 val t = runCatching { LocalTime.parse(time) }.getOrNull()
@@ -68,8 +76,12 @@ import org.json.JSONObject
                 }
             }
         } else {
-            if (boxes == null) {
-                Text("正在读取药盒…")
+            Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                Text("选择本次使用的药盒", Modifier.weight(1f), fontWeight = FontWeight.SemiBold)
+                if (boxes != null) Action("扫码核对药盒", secondary = true) { scan = true }
+            }
+            if (boxes == null) Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                Text("正在读取药盒…", Modifier.weight(1f))
                 Action("重新读取", secondary = true) { reload++ }
             }
             boxes?.let { data ->
@@ -79,14 +91,17 @@ import org.json.JSONObject
                     Check(label, selected == box.id, { selected = box.id; verified = false })
                 }
                 Check("不扣库存（使用了未入库的药盒）", selected == "", { selected = ""; verified = false })
-                Action("扫码核对药盒", secondary = true) { scan = true }
                 Check("我已对照实物核对药名、规格、有效期、用量与药盒", verified, { verified = it })
-                Action("确认已经服药", enabled = !state.busy && canConfirmDoseBox(data, selected, verified)) {
-                    val box = data.boxes.find { it.id == selected }
-                    if (box?.expiry?.let { it < request.date } == true) expired = true else submit(false)
+            }
+            ActionRow {
+                Action("返回上一步", secondary = true, enabled = !state.busy) { step = 1 }
+                boxes?.let { data ->
+                    Action("确认已经服药", enabled = !state.busy && canConfirmDoseBox(data, selected, verified)) {
+                        val box = data.boxes.find { it.id == selected }
+                        if (box?.expiry?.let { it < request.date } == true) expired = true else submit(false)
+                    }
                 }
             }
-            Action("返回上一步", secondary = true, enabled = !state.busy) { step = 1 }
         }
         error?.let { Text(it, color = Red) }
     }
