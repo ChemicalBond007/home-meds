@@ -37,7 +37,6 @@ import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.LocalLifecycleOwner
 import com.homemeds.app.*
-import com.homemeds.app.net.AiAgent
 import kotlinx.coroutines.*
 import org.json.JSONArray
 import org.json.JSONObject
@@ -65,156 +64,102 @@ fun parseProposal(o: JSONObject, target: String): Proposal {
 @Composable fun ChatScreen(vm: AppViewModel, state: AppState, clearRequested: Boolean = false, clearHandled: () -> Unit = {}) {
     val target = assistantTarget(state)
     key(state.user?.id, state.groupId, target, state.assistantPhone) {
-        ClearableChat(clearRequested, clearHandled) { ChatConversation(vm, state, target) }
+        ClearableChat(clearRequested, clearHandled, clear = vm.chat::clear) { ChatConversation(vm, state, target) }
     }
 }
 
-@Composable internal fun ClearableChat(clearRequested: Boolean, clearHandled: () -> Unit, conversation: @Composable () -> Unit) {
+@Composable internal fun ClearableChat(clearRequested: Boolean, clearHandled: () -> Unit, clear: () -> Unit = {},
+    conversation: @Composable () -> Unit) {
     var generation by remember { mutableIntStateOf(0) }
-    // Replacing the whole session also cancels its stream and drops image/history context.
+    // Recreate transient UI (e.g. microphone input) after explicitly clearing the retained session.
     key(generation) { conversation() }
     if (clearRequested) AlertDialog(
         onDismissRequest = clearHandled,
         title = { Text("清空对话历史") },
         text = { Text("将停止正在进行的回复，清空当前对话、推荐回复、输入内容、图片附件及未保存草稿。已保存的药品、库存和计划不受影响。此操作无法撤销。") },
         dismissButton = { TextButton(clearHandled) { Text("取消") } },
-        confirmButton = { TextButton({ generation++; clearHandled() }) { Text("确认清空") } },
+        confirmButton = { TextButton({ clear(); generation++; clearHandled() }) { Text("确认清空") } },
     )
 }
 
 @Composable private fun ChatConversation(vm: AppViewModel, state: AppState, target: String?) {
-    var text by remember { mutableStateOf("") }
-    var messages by remember { mutableStateOf<List<ChatMessage>>(emptyList()) }
-    var proposals by remember { mutableStateOf<List<Proposal>>(emptyList()) }
-    var medicineDrafts by remember { mutableStateOf<List<JSONObject>>(emptyList()) }
-    var intake by remember { mutableStateOf<JSONObject?>(null) }
-    var photoDialog by remember { mutableStateOf(false) }
-    var photos by remember { mutableStateOf<List<PhotoAttachment>>(emptyList()) }
-    var editor by remember { mutableStateOf<Proposal?>(null) }
-    var pause by remember { mutableStateOf<Proposal?>(null) }
-    var suggestions by remember { mutableStateOf<List<String>>(emptyList()) }
-    var stream by remember { mutableStateOf<Job?>(null) }
-    var running by remember { mutableStateOf(false) }
-    var partial by remember { mutableStateOf("") }
-    var error by remember { mutableStateOf<String?>(null) }
-    val scope = rememberCoroutineScope()
-    val speak = LocalSpeak.current
-    val voice = rememberChatVoiceInput(
-        recognized = { text = appendRecognizedText(text, it) },
-        reportError = { error = it },
-    )
-    fun send() {
-        val prompt = text.trim().ifBlank {
-            if (photos.isNotEmpty()) "请综合这些照片中同一药盒的各个角度识别药品并生成待确认入库草稿"
-            else ""
-        }
-        if (running || target == null || state.groupId == null || prompt.isBlank()) return
-        text = ""; error = null; partial = ""; suggestions = emptyList(); running = true
-        messages = (messages + ChatMessage("user", prompt.take(6000), photos.map { it.dataUrl })).takeLast(19)
-        photos = emptyList()
-        val history = messages
-        stream = scope.launch {
-            try {
-                AiAgent.runChat(json("user_id" to target, "intent" to "chat",
-                    "messages" to JSONArray(history.map {
-                        if (it.role == "user") AiAgent.userMessage(it.content.take(6000), it.imageDataUrls)
-                        else json("role" to it.role, "content" to it.content.take(6000))
-                    })), state.groupId, state.assistantPhone) { event, data ->
-                    withContext(Dispatchers.Main) {
-                        when (event) {
-                            "delta" -> partial += data.toString()
-                            "suggestions" -> suggestions = (data as JSONArray).strings()
-                            "draft" -> try {
-                                val proposal = parseProposal(data as JSONObject, target)
-                                if (proposals.none { it.id == proposal.id }) proposals = proposals + proposal
-                            } catch (e: Exception) { error = e.message ?: "草稿不完整，未加入列表" }
-                            "draft_error" -> error = (data as? JSONObject)?.optString("message")
-                            "medicine_draft" -> {
-                                val draft = data as JSONObject
-                                if (medicineDrafts.none { it.optString("draft_id") == draft.getString("draft_id") })
-                                    medicineDrafts = medicineDrafts + draft
-                            }
+    with(vm.chat) {
+        val speak = LocalSpeak.current
+        val voice = rememberChatVoiceInput(
+            recognized = { text = appendRecognizedText(text, it) },
+            reportError = { error = it },
+        )
+        ChatLayout(revision = "${messages.size}:${partial.length}:${medicineDrafts.size}:${proposals.size}", composer = {
+            if (voice.busy) Row(Modifier.padding(horizontal = 16.dp), verticalAlignment = Alignment.CenterVertically) {
+                Text("正在语音输入…", color = Muted)
+                if (voice.listening) TextButton(voice.cancel) { Text("取消") }
+            }
+            ChatComposer(text, { text = it.take(6000) }, photos, suggestions, running,
+                canSend = !voice.busy && target != null && state.groupId != null && (text.isNotBlank() || photos.isNotEmpty()),
+                photograph = { photoDialog = true },
+                removePhoto = { index -> photos = photos.filterIndexed { i, _ -> i != index } },
+                voice = {
+                    error = null
+                    voice.start()
+                }, send = ::send, stop = ::stop, voiceActive = voice.busy)
+        }) {
+            if (target == null) item { Text("请在设置 → 助手偏好中选择计划对象。", color = Muted) }
+            if (messages.isEmpty() && partial.isEmpty()) item {
+                Text("可以发送文字或拍摄药盒的多个角度，助手会在信息充分时生成待确认草稿。", color = Muted)
+            }
+            items(messages) { msg -> Panel(if (msg.role == "user") "你" else "AI助手", trailing = if (msg.role == "assistant") {
+                { IconButton({ speak(msg.content) }, Modifier.size(touchHeight)) { Icon(Icons.AutoMirrored.Filled.VolumeUp, "朗读") } }
+            } else null) {
+                if (msg.role == "assistant") ChatMarkdown(msg.content) else Text(msg.content)
+                if (msg.imageDataUrls.isNotEmpty()) Text("[已附 ${msg.imageDataUrls.size} 张药品图片]", color = Muted)
+            } }
+            if (partial.isNotEmpty()) item { Panel("助手正在回复") { ChatMarkdown(partial) } }
+            error?.let { message -> item { Text(message, color = Muted) } }
+            if (medicineDrafts.isNotEmpty()) item { Text("待确认的药品（${medicineDrafts.size}）", style = MaterialTheme.typography.titleMedium) }
+            items(medicineDrafts) { draft ->
+                Panel(draft.optString("name"), warning = true) {
+                    listOf("specification" to "规格", "manufacturer" to "厂家", "units_per_package" to "每盒数量",
+                        "expiry_date" to "有效期", "batch_number" to "批号", "code" to "条码 / 追溯码").forEach { (key, label) ->
+                        if (!draft.isNull(key)) Text("$label：${draft.get(key)}")
+                    }
+                    Text("尚未入库，请逐项核对实物。")
+                    Sources(parseSources(draft.opt("sources")))
+                    ActionRow {
+                        Action("打开核对并入库", enabled = !running && !state.busy) { intake = draft }
+                        Action("丢弃草稿", secondary = true, enabled = !running) {
+                            medicineDrafts = medicineDrafts.filterNot { it.optString("draft_id") == draft.optString("draft_id") }
                         }
                     }
                 }
-            } catch (e: CancellationException) { suggestions = emptyList(); error = "已取消，草稿尚未保存"; throw e }
-            catch (e: Exception) { suggestions = emptyList(); error = e.message ?: "对话失败，请重试" }
-            finally {
-                if (partial.isNotBlank()) messages = (messages + ChatMessage("assistant", partial.take(6000))).takeLast(20)
-                partial = ""; running = false
             }
-        }
-    }
-    ChatLayout(revision = "${messages.size}:${partial.length}:${medicineDrafts.size}:${proposals.size}", composer = {
-        if (voice.busy) Row(Modifier.padding(horizontal = 16.dp), verticalAlignment = Alignment.CenterVertically) {
-            Text("正在语音输入…", color = Muted)
-            if (voice.listening) TextButton(voice.cancel) { Text("取消") }
-        }
-        ChatComposer(text, { text = it.take(6000) }, photos, suggestions, running,
-            canSend = !voice.busy && target != null && state.groupId != null && (text.isNotBlank() || photos.isNotEmpty()),
-            photograph = { photoDialog = true },
-            removePhoto = { index -> photos = photos.filterIndexed { i, _ -> i != index } },
-            voice = {
-                error = null
-                voice.start()
-            }, send = ::send, stop = { stream?.cancel() }, voiceActive = voice.busy)
-    }) {
-        if (target == null) item { Text("请在设置 → 助手偏好中选择计划对象。", color = Muted) }
-        if (messages.isEmpty() && partial.isEmpty()) item {
-            Text("可以发送文字或拍摄药盒的多个角度，助手会在信息充分时生成待确认草稿。", color = Muted)
-        }
-        items(messages) { msg -> Panel(if (msg.role == "user") "你" else "AI助手", trailing = if (msg.role == "assistant") {
-            { IconButton({ speak(msg.content) }, Modifier.size(touchHeight)) { Icon(Icons.AutoMirrored.Filled.VolumeUp, "朗读") } }
-        } else null) {
-            Text(msg.content)
-            if (msg.imageDataUrls.isNotEmpty()) Text("[已附 ${msg.imageDataUrls.size} 张药品图片]", color = Muted)
-        } }
-        if (partial.isNotEmpty()) item { Panel("助手正在回复") { Text(partial) } }
-        error?.let { message -> item { Text(message, color = Muted) } }
-        if (medicineDrafts.isNotEmpty()) item { Text("待确认的药品（${medicineDrafts.size}）", style = MaterialTheme.typography.titleMedium) }
-        items(medicineDrafts) { draft ->
-            Panel(draft.optString("name"), warning = true) {
-                listOf("specification" to "规格", "manufacturer" to "厂家", "units_per_package" to "每盒数量",
-                    "expiry_date" to "有效期", "batch_number" to "批号", "code" to "条码 / 追溯码").forEach { (key, label) ->
-                    if (!draft.isNull(key)) Text("$label：${draft.get(key)}")
-                }
-                Text("尚未入库，请逐项核对实物。")
-                Sources(parseSources(draft.opt("sources")))
-                ActionRow {
-                    Action("打开核对并入库", enabled = !running && !state.busy) { intake = draft }
-                    Action("丢弃草稿", secondary = true, enabled = !running) {
-                        medicineDrafts = medicineDrafts.filterNot { it.optString("draft_id") == draft.optString("draft_id") }
+            if (proposals.isNotEmpty()) item { Text("待确认的计划（${proposals.size}）", style = MaterialTheme.typography.titleMedium) }
+            items(proposals) { p ->
+                Panel(when (p.operation) { "pause" -> "待确认暂停"; "update" -> "待确认修改"; else -> "待确认新增" }, warning = true) {
+                    Text(p.draft.getString("medicine_name"), style = MaterialTheme.typography.titleMedium)
+                    Text("${p.draft.get("amount")} ${p.draft.getString("unit")} · ${p.draft.getJSONArray("times").strings().joinToString(" / ")}")
+                    Text("尚未保存。请核对医嘱、对象、日期、用量与优先药盒。")
+                    ActionRow {
+                        Action("打开核对", enabled = !running && !state.busy) { if (p.operation == "pause") pause = p else editor = p }
+                        Action("丢弃草稿", secondary = true, enabled = !running) { proposals = proposals.filterNot { it.id == p.id } }
                     }
                 }
             }
         }
-        if (proposals.isNotEmpty()) item { Text("待确认的计划（${proposals.size}）", style = MaterialTheme.typography.titleMedium) }
-        items(proposals) { p ->
-            Panel(when (p.operation) { "pause" -> "待确认暂停"; "update" -> "待确认修改"; else -> "待确认新增" }, warning = true) {
-                Text(p.draft.getString("medicine_name"), style = MaterialTheme.typography.titleMedium)
-                Text("${p.draft.get("amount")} ${p.draft.getString("unit")} · ${p.draft.getJSONArray("times").strings().joinToString(" / ")}")
-                Text("尚未保存。请核对医嘱、对象、日期、用量与优先药盒。")
-                ActionRow {
-                    Action("打开核对", enabled = !running && !state.busy) { if (p.operation == "pause") pause = p else editor = p }
-                    Action("丢弃草稿", secondary = true, enabled = !running) { proposals = proposals.filterNot { it.id == p.id } }
-                }
+        if (photoDialog) PhotoCaptureDialog({ photoDialog = false }, initialPhotos = photos) { photos = it; photoDialog = false }
+        intake?.let { draft ->
+            IntakeDialog(vm, state, initialDraft = draft, onSaved = {
+                medicineDrafts = medicineDrafts.filterNot { it.optString("draft_id") == draft.optString("draft_id") }
+            }) { intake = null }
+        }
+        editor?.let { p -> PlanEditor(state, p.draft, { editor = null }) { body ->
+            vm.save(if (p.operation == "create") "POST" else "PUT", "/plans" + (p.planId?.let { "/${pathSegment(it)}" } ?: ""), body) {
+                proposals = proposals.filterNot { it.id == p.id }; editor = null
             }
-        }
+        } }
+        pause?.let { p -> Confirm("确认暂停正式计划", "暂停 ${p.draft.getString("medicine_name")}？此操作会更新日历与提醒。", { pause = null }) {
+            vm.save("DELETE", "/plans/${pathSegment(p.planId)}") { proposals = proposals.filterNot { it.id == p.id }; pause = null }
+        } }
     }
-    if (photoDialog) PhotoCaptureDialog({ photoDialog = false }, initialPhotos = photos) { photos = it; photoDialog = false }
-    intake?.let { draft ->
-        IntakeDialog(vm, state, initialDraft = draft, onSaved = {
-            medicineDrafts = medicineDrafts.filterNot { it.optString("draft_id") == draft.optString("draft_id") }
-        }) { intake = null }
-    }
-    editor?.let { p -> PlanEditor(state, p.draft, { editor = null }) { body ->
-        vm.save(if (p.operation == "create") "POST" else "PUT", "/plans" + (p.planId?.let { "/${pathSegment(it)}" } ?: ""), body) {
-            proposals = proposals.filterNot { it.id == p.id }; editor = null
-        }
-    } }
-    pause?.let { p -> Confirm("确认暂停正式计划", "暂停 ${p.draft.getString("medicine_name")}？此操作会更新日历与提醒。", { pause = null }) {
-        vm.save("DELETE", "/plans/${pathSegment(p.planId)}") { proposals = proposals.filterNot { it.id == p.id }; pause = null }
-    } }
 }
 
 internal data class ChatVoiceInput(val busy: Boolean, val listening: Boolean, val start: () -> Unit, val cancel: () -> Unit)

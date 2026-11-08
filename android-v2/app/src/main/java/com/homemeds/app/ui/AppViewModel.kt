@@ -54,6 +54,11 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     val prefs = Prefs(app)
     private val mutable = MutableStateFlow(AppState(assistantPhone = prefs.assistantPhone))
     val state = mutable.asStateFlow()
+    internal val chat = ChatSession(viewModelScope)
+
+    private fun updateState(change: (AppState) -> AppState) {
+        mutable.update { before -> change(before).also(chat::bind) }
+    }
     private var generation = 0
     private var refreshJob: Job? = null
     private var syncJob: Job? = null
@@ -68,8 +73,8 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
             }
         }
     }
-    fun error(message: String?) { mutable.update { it.copy(error = message) } }
-    fun notice(message: String?) { mutable.update { it.copy(notice = message) } }
+    fun error(message: String?) { updateState { it.copy(error = message) } }
+    fun notice(message: String?) { updateState { it.copy(notice = message) } }
     private suspend fun restore() {
         val epoch = generation
         try {
@@ -77,10 +82,10 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         } catch (e: CancellationException) { throw e }
         catch (e: ApiException) {
             if (epoch != generation) return
-            if (e.status == 401) { Sync.logout(app); mutable.value = AppState(loading = false) }
-            else mutable.update { it.copy(loading = false, error = e.message) }
+            if (e.status == 401) { Sync.logout(app); updateState { AppState(loading = false) } }
+            else updateState { it.copy(loading = false, error = e.message) }
         } catch (_: Exception) {
-            if (epoch == generation) mutable.update { it.copy(loading = false, error = "无法连接服务器，请检查网络后重试") }
+            if (epoch == generation) updateState { it.copy(loading = false, error = "无法连接服务器，请检查网络后重试") }
         }
     }
     private suspend fun acceptSnapshot(body: JSONObject, epoch: Int) {
@@ -98,7 +103,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
             catch (_: Exception) { notice("数据已更新，本地提醒同步失败，请到设置重试。") }
         }
         if (epoch != generation) return
-        mutable.update { next.copy(busy = it.busy, error = it.error, notice = it.notice,
+        updateState { next.copy(busy = it.busy, error = it.error, notice = it.notice,
             assistantTarget = if (contextChanged) next.groupId?.let { id -> prefs.assistantTarget(user.id, id) } else it.assistantTarget,
             assistantPhone = prefs.assistantPhone) }
     }
@@ -106,7 +111,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         val user = mutable.value.user ?: return
         generation++
         if (refreshJob != currentCoroutineContext()[Job]) refreshJob?.cancel()
-        mutable.update { it.copy(groupId = id, members = emptyList(), products = emptyList(), stock = emptyList(),
+        updateState { it.copy(groupId = id, members = emptyList(), products = emptyList(), stock = emptyList(),
             plans = emptyList(), todos = emptyList(), warehouses = emptyList(),
             assistantTarget = id?.let { prefs.assistantTarget(user.id, it) }, assistantPhone = prefs.assistantPhone) }
         val epoch = generation
@@ -132,7 +137,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     private suspend fun handle(e: Exception) {
         if (e is ApiException && e.status == 401) {
             generation++; Sync.logout(app)
-            mutable.value = AppState(loading = false, error = "登录已失效，请重新登录")
+            updateState { AppState(loading = false, error = "登录已失效，请重新登录") }
         } else error(e.message?.takeIf { it.hasChinese() } ?: "操作失败，请检查网络或稍后重试")
     }
     fun perform(block: suspend () -> Unit) {
@@ -140,11 +145,11 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         operation = viewModelScope.launch {
             generation++
             refreshJob?.cancel()
-            mutable.update { it.copy(busy = true, error = null) }
+            updateState { it.copy(busy = true, error = null) }
             try { block() }
             catch (e: CancellationException) { throw e }
             catch (e: Exception) { handle(e) }
-            finally { mutable.update { it.copy(busy = false) } }
+            finally { updateState { it.copy(busy = false) } }
         }
     }
     fun authenticate(path: String, body: JSONObject) = perform {
@@ -183,18 +188,18 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         val group = s.groupId ?: return
         if (s.members.none { it.id == id }) { error("请选择当前家庭成员"); return }
         prefs.setAssistantTarget(user.id, group, id)
-        mutable.update { it.copy(assistantTarget = id) }
+        updateState { it.copy(assistantTarget = id) }
     }
     fun setAssistantPhone(phone: Boolean) {
         prefs.assistantPhone = phone
-        mutable.update { it.copy(assistantPhone = phone) }
+        updateState { it.copy(assistantPhone = phone) }
     }
     fun syncNow() = perform { Sync.syncNow(app); notice(prefs.lastError ?: "已同步 ${prefs.events} 个日历日程、${prefs.alarms} 个提醒") }
     fun logout() = perform {
         try { post("/auth/logout") } finally {
             generation++; refreshJob?.cancel(); syncJob?.cancel()
             Sync.logout(app)
-            mutable.value = AppState(loading = false)
+            updateState { AppState(loading = false) }
         }
     }
 }
