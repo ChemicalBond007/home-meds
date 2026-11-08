@@ -67,11 +67,11 @@ internal fun planSummary(p: Plan) = listOf("${Texts.amount(p.amount)} ${p.unit}"
     }
     editor?.let { initial ->
         PlanEditor(state, initial, { editor = null }) { body ->
-            vm.save(if (editId == null) "POST" else "PUT", "/plans" + (editId?.let { "/$it" } ?: ""), body) { editor = null }
+            vm.save(if (editId == null) "POST" else "PUT", "/plans" + (editId?.let { "/${pathSegment(it)}" } ?: ""), body) { editor = null }
         }
     }
     pause?.let { plan -> Confirm("暂停计划", "暂停 ${plan.medicineName}？会自动更新本地日历和提醒。", { pause = null }) {
-        vm.save("DELETE", "/plans/${plan.id}") { pause = null }
+        vm.save("DELETE", "/plans/${pathSegment(plan.id)}") { pause = null }
     } }
 }
 

@@ -69,6 +69,11 @@ class Prefs(context: Context) {
         if (target == null) remove(key) else putString(key, target)
     }
 
+    /** In-stock box filter and sort order, kept per family because warehouse ids belong to one family. */
+    fun boxFilter(groupId: String): String? = p.getString("box_filter:$groupId", null)
+
+    fun setBoxFilter(groupId: String, value: String) = p.edit { putString("box_filter:$groupId", value) }
+
     var lastSync: Long?
         get() = p.getLong("last_sync", 0).takeIf { it > 0 }
         set(v) = p.edit { putLong("last_sync", v ?: 0) }

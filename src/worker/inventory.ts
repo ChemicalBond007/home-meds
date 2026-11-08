@@ -7,6 +7,11 @@ import { localClock } from '../shared/schedule';
 import type { Product, StockItem } from '../shared/types';
 
 export const inventory = new Hono<AppEnv>();
+const catalogFields = ['name', 'generic_name', 'manufacturer', 'specification', 'indications',
+  'precautions', 'base_unit', 'units_per_package', 'sources'] as const;
+function publicCatalog(value: Record<string, unknown>) {
+  return Object.fromEntries(catalogFields.filter(k => Object.hasOwn(value, k)).map(k => [k, value[k]]));
+}
 inventory.get('/products', async c => {
   const g = await group(c);
   return c.json((await c.env.DB.prepare('SELECT * FROM products WHERE group_id=? ORDER BY name').bind(g.id).all()).results);
@@ -17,7 +22,7 @@ inventory.get('/codes/resolve', async c => {
     WHERE pc.group_id=? AND pc.code=?`).bind(g.id, parsed.product_key).first<Product>() : null;
   const box = parsed.trace_code ? await c.env.DB.prepare('SELECT * FROM stock_items WHERE group_id=? AND trace_code=?').bind(g.id, parsed.trace_code).first() : null;
   const cache = !product && parsed.product_key ? await c.env.DB.prepare('SELECT data FROM catalog_cache WHERE code=?').bind(parsed.product_key).first<{ data: string }>() : null;
-  return c.json({ parsed, product, box, cache: cache ? JSON.parse(cache.data) : null });
+  return c.json({ parsed, product, box, cache: cache ? publicCatalog(JSON.parse(cache.data)) : null });
 });
 inventory.post('/products', async c => {
   const g = await group(c), d = await json(c, productSchema), id = crypto.randomUUID();
@@ -29,8 +34,8 @@ inventory.post('/products', async c => {
       base_unit,units_per_package,status,sources,created_by) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)`).bind(...fields),
   ];
   if (code) statements.push(c.env.DB.prepare('INSERT INTO product_codes(group_id,code,product_id) VALUES(?,?,?)').bind(g.id, code, id));
-  if (code && d.status === 'confirmed') statements.push(c.env.DB.prepare(`INSERT INTO catalog_cache(code,data) VALUES(?,?)
-    ON CONFLICT(code) DO UPDATE SET data=excluded.data,updated_at=datetime('now')`).bind(code, JSON.stringify(d)));
+  if (code && c.get('user').role === 'admin' && d.status === 'confirmed') statements.push(c.env.DB.prepare(`INSERT INTO catalog_cache(code,data) VALUES(?,?)
+    ON CONFLICT(code) DO UPDATE SET data=excluded.data,updated_at=datetime('now')`).bind(code, JSON.stringify(publicCatalog(d))));
   try { await c.env.DB.batch(statements); } catch { fail(409, '此码已关联药品，请刷新后重试'); }
   c.set('auditTarget', id);
   return c.json({ id }, 201);

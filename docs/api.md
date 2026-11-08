@@ -138,7 +138,7 @@
 | 方法 | 路径 | 权限 | 请求体 / 参数 | 说明 |
 | :--- | :--- | :--- | :--- | :--- |
 | `GET` | `/api/push/config` | 已登录 | 无 | 返回 `{"public_key": c.env.VAPID_PUBLIC_KEY, "configured": boolean}`。 |
-| `POST` | `/api/push/subscribe` | 已登录 | `{"endpoint": "https://...", "keys": {"p256dh": "...", "auth": "..."}}` | 为当前登录用户绑定浏览器 Web Push 订阅（仅接受 HTTPS Endpoint）。 |
+| `POST` | `/api/push/subscribe` | 已登录 | `{"endpoint": "https://...", "keys": {"p256dh": "...", "auth": "..."}}` | 仅接受 HTTPS，每用户每小时限 10 次（超出 429），最多保留最新 5 个订阅。 |
 | `POST` | `/api/push/unsubscribe` | 已登录 | `{"endpoint": "https://..."}` | 移除当前用户在本设备上的指定 Web Push 订阅（共享设备退出登录时调用，防止向后续登录者推送原用户的服药提醒）。 |
 
 ---
@@ -162,13 +162,14 @@
 | `POST` | `/api/ai/lookup` | 已登录 | `{"query"?, "code"?}` | **SSE 流式公开药品检索**。依次推送进度、含 `draft` 药品草稿与 `sources` 来源列表的结果事件（状态固定为待人工确认）或错误事件。 |
 | `POST` | `/api/ai/chat` | 已登录 | `{"messages": [...], "target_user_id"?, "intent"?: "chat" \| "draft"}` | **SSE 流式用药计划助手对话**。支持多轮只读检索家庭药箱（`find_medicines` / `list_medicines`）并生成待确认计划草稿卡片、正文分块与模型推荐回复（`<suggested_replies>`）。 |
 
-### 8.3 原生客户端 AI 直连配合接口（`/api/app/ai/*`）
+### 8.3 原生客户端 AI 会话与 Worker 代理接口（`/api/app/ai/*`）
 
 供 Android 客户端在本地执行 AI Agent Loop 与多角度照片识药时配合使用：
 
 | 方法 | 路径 | 权限 | 请求体 / 参数 | 说明 |
 | :--- | :--- | :--- | :--- | :--- |
-| `POST` | `/api/app/ai/session` | 已登录 | `{"kind": "lookup" \| "chat", "public_key": "<Base64 SPKI RSA-2048>", "query"?, "target_user_id"?, "require_search_credentials"?}` | 校验并扣除当日配额，创建 15 分钟有效的 `app_ai_sessions` 记录，返回用客户端 RSA 公钥封装的临时 LLM/Tavily 凭据（`sealed`）及会话配置。 |
+| `POST` | `/api/app/ai/session` | 已登录 | `{"kind": "lookup" \| "chat", "query"?, "user_id"?, "intent"?: "chat" \| "draft"}` | lookup 必须提供 query，chat 必须提供 user_id。扣除每日配额，返回 15 分钟 session_id、expires_at、settings 及聊天 system_prompt，绝不返回提供商密钥或加密凭据。携带 public_key 的旧 APK 请求返回 501，文字自动回退服务端，照片需升级。 |
+| `POST` | `/api/app/ai/provider` | 会话所属用户及家庭 | `{"session_id", "service": "llm" \| "tavily", "path", "body": {...}}` | 唯一采用 4 MiB 请求体上限的 API。会话未结束且未过期，每会话模型最多 12 次、搜索最多 5 次。模型路径仅允许 `/chat/completions`、`/responses`、`/messages`、`/anthropic/v1/messages`；Tavily 仅 `/search`，仅外部搜索模式的 lookup 会话。Worker 强制模型与 token 上限、剥离非 lookup 联网参数、注入密钥并禁止重定向。成功 JSON/SSE 流式返回，上游非 2xx 仅返回状态码，不返回响应体。 |
 | `POST` | `/api/app/ai/tool` | 已登录 | `{"session_id", "name": "find_medicines" \| "list_medicines" \| "get_member_plans" \| "request_plan_details" \| "add_plan_draft" \| "propose_plan" \| "propose_plan_update" \| "propose_plan_pause", "arguments": {...}}` | 在服务端安全执行只读家庭数据库查询或校验生成待确认计划草稿（每个会话最多允许调用 5 次数据库工具）。 |
 | `POST` | `/api/app/ai/finish` | 已登录 | `{"session_id", "success": boolean}` | 结束手机端 AI 会话，将会话最终状态写入 `ai_lookup_logs` 与 `audit_logs`（超时未结束的会话由每 5 分钟 Cron 自动回收记为失败）。 |
 

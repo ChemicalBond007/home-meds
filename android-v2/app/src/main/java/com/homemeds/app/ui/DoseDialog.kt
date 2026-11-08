@@ -29,7 +29,7 @@ import org.json.JSONObject
     LaunchedEffect(request.plan.id, reload) {
         boxes = null; selected = null; verified = false
         try {
-            val data = PlanBoxes.parse(vm.get("/plans/${request.plan.id}/boxes"))
+            val data = PlanBoxes.parse(vm.get("/plans/${pathSegment(request.plan.id)}/boxes"))
             boxes = data; selected = initialDoseBox(data)
         } catch (e: CancellationException) { throw e }
         catch (_: Exception) { error = "药盒读取失败，请重试后再核对" }

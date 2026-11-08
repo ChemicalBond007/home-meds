@@ -12,6 +12,11 @@ val localBaseUrl = providers.fileContents(rootProject.layout.projectDirectory.fi
     }?.takeIf { it.isNotEmpty() }
 val baseUrl = (providers.gradleProperty("homeMedsBaseUrl").orNull ?: localBaseUrl ?: "https://your-domain.example.com").trimEnd('/')
 require(Regex("^https://[A-Za-z0-9.-]+(:\\d+)?$").matches(baseUrl)) { "homeMedsBaseUrl must be an HTTPS origin" }
+val apkAbis = providers.gradleProperty("homeMedsAbis").orNull?.split(',')?.map { it.trim() }?.distinct()
+require(apkAbis == null || apkAbis.all { it in setOf("arm64-v8a", "armeabi-v7a", "x86", "x86_64") }) {
+    "homeMedsAbis must be a comma-separated list of arm64-v8a, armeabi-v7a, x86, x86_64"
+}
+val apkSuffix = apkAbis?.joinToString("-", prefix = "-").orEmpty()
 
 android {
     namespace = "com.homemeds.app"
@@ -20,11 +25,19 @@ android {
         applicationId = "com.homemeds.app.v2"
         minSdk = 29
         targetSdk = 36
-        versionCode = 20600
-        versionName = "2.6.0"
+        versionCode = 20800
+        versionName = "2.8.0"
         buildConfigField("String", "BASE_URL", "\"$baseUrl\"")
+        apkAbis?.let { selected -> ndk { abiFilters += selected } }
     }
     buildFeatures { buildConfig = true; compose = true }
+    buildTypes {
+        release {
+            isMinifyEnabled = true
+            isShrinkResources = true
+            proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"))
+        }
+    }
     androidResources { localeFilters += listOf("zh-rCN") }
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_17
@@ -34,13 +47,13 @@ android {
     lint { abortOnError = true }
 }
 
-base.archivesName.set("赛博药箱-${android.defaultConfig.versionName}")
+base.archivesName.set("赛博药箱-${android.defaultConfig.versionName}$apkSuffix")
 
 androidComponents {
     onVariants { variant ->
         variant.outputs.forEach { output ->
             if (output is com.android.build.api.variant.impl.VariantOutputImpl) {
-                output.outputFileName.set("赛博药箱-${android.defaultConfig.versionName}.apk")
+                output.outputFileName.set("赛博药箱-${android.defaultConfig.versionName}$apkSuffix.apk")
             }
         }
     }
@@ -49,7 +62,6 @@ androidComponents {
 dependencies {
     implementation(platform("androidx.compose:compose-bom:2025.08.01"))
     implementation("androidx.compose.ui:ui")
-    implementation("androidx.compose.ui:ui-tooling-preview")
     implementation("androidx.compose.material3:material3")
     implementation("androidx.compose.material:material-icons-extended")
     debugImplementation("androidx.compose.ui:ui-tooling")

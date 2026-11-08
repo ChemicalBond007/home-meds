@@ -1,6 +1,5 @@
 import { useEffect, useId, useRef, useState, type ReactNode } from 'react';
 import { api } from './api';
-import { isApp, nativeCall } from './native';
 export const errorText = (e: unknown) => e instanceof Error ? e.message : '操作失败，请重试';
 export function useLoad<T>(path: string, version: string | number = '', initial?: T) {
   const [data, setData] = useState<T | undefined>(initial), [error, setError] = useState(''), [loading, setLoading] = useState(initial === undefined);
@@ -34,40 +33,14 @@ export function Modal({ title, children, close }: { title: string; children: Rea
     {children}
   </dialog>;
 }
-export function Empty({ title, children }: { title: string; children?: ReactNode }) {
-  return <div className="empty"><div className="empty-mark" aria-hidden="true">＋</div><h3>{title}</h3>{children && <p>{children}</p>}</div>;
-}
-export function Icon({ name }: { name: 'home' | 'box' | 'plan' | 'chat' | 'settings' | 'scan' | 'plus' }) {
+export function Icon({ name }: { name: 'home' | 'box' | 'chat' | 'settings' }) {
   const paths = {
     home: 'M3 10 12 3l9 7v11h-6v-7H9v7H3Z',
     box: 'M3 6h18v15H3ZM2 3h20v4H2m7 5h6',
-    plan: 'M5 4h14v18H5Zm4-2v4m6-4v4M8 11l2 2 5-5M8 17h8',
     chat: 'M3 3h18v14H9l-6 5Zm4 5h10M7 12h7',
     settings: 'M12 3v3m0 12v3M3 12h3m12 0h3M5 5l2 2m10 10 2 2M5 19l2-2M17 7l2-2M16 12a4 4 0 1 1-8 0 4 4 0 0 1 8 0',
-    scan: 'M3 8V3h5m8 0h5v5M3 16v5h5m8 0h5v-5M7 7v10m4-10v10m3-10v10m3-10v10',
-    plus: 'M12 4v16M4 12h16',
   };
   return <svg className="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d={paths[name]} /></svg>;
-}
-export function Speak({ text }: { text: string }) {
-  const [voice, setVoice] = useState<SpeechSynthesisVoice>(), [nativeVoice, setNativeVoice] = useState(false);
-  useEffect(() => {
-    if (isApp()) {
-      let active = true;
-      nativeCall<{ available: boolean }>('tts.available').then(r => { if (active) setNativeVoice(r.available); }).catch(() => {});
-      return () => { active = false; nativeCall('tts.stop').catch(() => {}); };
-    }
-    if (!('speechSynthesis' in window)) return;
-    const update = () => setVoice(speechSynthesis.getVoices().find(v => /^zh/i.test(v.lang)));
-    update(); speechSynthesis.addEventListener('voiceschanged', update);
-    return () => { speechSynthesis.removeEventListener('voiceschanged', update); speechSynthesis.cancel(); };
-  }, []);
-  if (nativeVoice) return <button type="button" className="secondary" onClick={() => { nativeCall('tts.speak', { text }).catch(() => {}); }}>朗读药品信息</button>;
-  if (!voice) return null;
-  return <button type="button" className="secondary" onClick={() => {
-    speechSynthesis.cancel();
-    const u = new SpeechSynthesisUtterance(text); u.voice = voice; u.lang = voice.lang; u.rate = 0.85; speechSynthesis.speak(u);
-  }}>朗读药品信息</button>;
 }
 export function Confirm({ title, children, action, close }: { title: string; children: ReactNode; action: () => Promise<void>; close: () => void }) {
   const [busy, setBusy] = useState(false), [error, setError] = useState('');

@@ -1,10 +1,10 @@
-import { useEffect, useRef, useState, type ReactNode } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { aiSettingsSchema, connectionId, deepseekBaseUrl, type AIModel, type AISettings as AIConfig, type SearchProbe } from '../shared/ai';
 import { api } from './api';
 import { Message, errorText, useLoad } from './components';
 import type { AISettingsState } from '../shared/bootstrap';
 
-export function AISettings({ children, initial, onBusy }: { children?: ReactNode; initial?: AISettingsState; onBusy?: (value: boolean) => void }) {
+export function AISettings({ initial, onBusy }: { initial?: AISettingsState; onBusy?: (value: boolean) => void }) {
   const load = useLoad<AISettingsState>('/ai/settings', '', initial);
   const [saved, setSaved] = useState<AISettingsState>();
   const source = saved || load.data;
@@ -128,6 +128,5 @@ export function AISettings({ children, initial, onBusy }: { children?: ReactNode
       }}>检测接口能力（使用已保存配置）</button></div>
     </form>
     {probe !== undefined && <pre className="probe-result">{JSON.stringify(probe, null, 2)}</pre>}
-    {children}
   </section>;
 }

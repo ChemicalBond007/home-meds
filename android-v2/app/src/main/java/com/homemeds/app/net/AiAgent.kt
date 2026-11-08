@@ -76,17 +76,14 @@ object AiAgent {
         ))
     }
 
-    internal data class Opened(val id: String, val settings: JSONObject, val http: NativeHttp? = null, val prompt: String = "")
+    internal data class Opened(val id: String, val settings: JSONObject, val prompt: String = "", val group: String? = null)
     private suspend fun open(kind: String, body: JSONObject, group: String?): Opened? {
-        val publicKey = try { DeviceKeys.publicKey() } catch (_: Exception) { return null }
-        body.put("kind", kind).put("public_key", publicKey)
+        body.put("kind", kind)
         val s = try { ApiClient.request("POST", "/app/ai/session", body, group) }
         catch (e: ApiException) { if (e.status in setOf(404, 405, 501)) return null else throw e }
         val id = s.getString("session_id")
         try {
-            val session = AiSession.parse(id, DeviceKeys.open(s.getJSONObject("credentials")))
-            return Opened(id, s.getJSONObject("settings"), NativeHttp(session, s.getJSONObject("settings").getInt("timeout_seconds")),
-                s.optString("system_prompt"))
+            return Opened(id, s.getJSONObject("settings"), s.optString("system_prompt"), group)
         } catch (e: Exception) {
             finish(id, group, false)
             throw e
@@ -96,6 +93,12 @@ object AiAgent {
         runCatching { ApiClient.request("POST", "/app/ai/finish", json("session_id" to id, "success" to success), group) }
         Unit
     }
+    private fun providerBody(s: Opened, service: String, path: String, body: JSONObject) =
+        json("session_id" to s.id, "service" to service, "path" to path, "body" to body)
+    private suspend fun providerJson(s: Opened, service: String, path: String, body: JSONObject) =
+        JSONObject(ApiClient.raw("POST", "/app/ai/provider", providerBody(s, service, path, body), s.group,
+            s.settings.getLong("timeout_seconds") + 15))
+
     private suspend fun complete(s: Opened, messages: JSONArray, tools: JSONArray? = null, required: Boolean = false,
         schema: JSONObject? = null, emit: (suspend (String, Any) -> Unit)? = null): JSONObject {
         val settings = s.settings
@@ -107,9 +110,9 @@ object AiAgent {
             if (schema != null) put("response_format", json("type" to "json_schema",
                 "json_schema" to json("name" to "medicine", "strict" to true, "schema" to schema)))
         }
-        val url = settings.getString("base_url").trimEnd('/') + "/chat/completions"
-        if (emit == null) return s.http!!.json(url, body, "llm").getJSONArray("choices").getJSONObject(0).getJSONObject("message")
-        return s.http!!.request(url, body, "llm") { response ->
+        val request = providerBody(s, "llm", "/chat/completions", body)
+        if (emit == null) return providerJson(s, "llm", "/chat/completions", body).getJSONArray("choices").getJSONObject(0).getJSONObject("message")
+        return ApiClient.stream("/app/ai/provider", request, s.group, settings.getLong("timeout_seconds") + 15) { response ->
             val content = StringBuilder()
             val calls = sortedMapOf<Int, JSONObject>()
             val filter = ThinkFilter()
@@ -164,7 +167,7 @@ object AiAgent {
         val image = hasImage(history)
         val s = if (phone || image) backend.open("chat", json("user_id" to body.getString("user_id"), "intent" to body.getString("intent")), group) else null
         if (s == null) {
-            if (image) throw UserError("图片识别需要手机直连模型，请确认服务器支持手机 AI 会话")
+            if (image) throw UserError("图片识别需要新版应用与服务器 AI 代理支持，请升级后重试")
             val filter = ThinkFilter()
             val request = JSONObject(body.toString()).put("messages",
                 JSONArray(history.objects().takeLast(19)).put(message("user",
@@ -288,7 +291,7 @@ object AiAgent {
             ApiClient.request("POST", "/app/ai/tool", json("session_id" to s.id, "name" to name, "args" to args), group)
         open suspend fun search(s: Opened, query: String, extraAllowed: () -> Boolean) = AiAgent.search(s, query, extraAllowed)
         open suspend fun builtin(s: Opened, query: String) = AiAgent.builtin(s, query)
-        open suspend fun page(s: Opened, url: String) = s.http!!.page(url)
+        open suspend fun page(s: Opened, url: String) = NativeHttp(s.settings.getInt("timeout_seconds")).page(url)
         open suspend fun finish(s: Opened, group: String?, success: Boolean) = AiAgent.finish(s.id, group, success)
     }
 
@@ -319,13 +322,6 @@ object AiAgent {
             }
         }
         suspend fun search(query: String): JSONObject {
-            if (primary.settings.optString("search_mode") == "builtin") {
-                if (budget.rounds >= budget.maxRounds - 1) throw UserError("模型调用次数已达上限")
-                budget.rounds++
-                val result = backend.builtin(primary, query)
-                record(result.getJSONArray("sources").objects())
-                return result
-            }
             val session = if (lookup) primary else {
                 if (!attempted) {
                     attempted = true
@@ -337,6 +333,13 @@ object AiAgent {
                     }
                 }
                 extra
+            }
+            if (session != null && session.settings.optString("search_mode") == "builtin") {
+                if (budget.rounds >= budget.maxRounds - 1) throw UserError("模型调用次数已达上限")
+                budget.rounds++
+                val result = backend.builtin(session, query)
+                record(result.getJSONArray("sources").objects()); successful = true
+                return result
             }
             if (session != null) {
                 val result = backend.search(session, query, budget::extraAllowed)
@@ -390,7 +393,7 @@ object AiAgent {
         val photos = medicineImages(multiple = images)
         if (photos.isEmpty()) throw UserError("请先添加有效期或批号照片")
         val s = backend.open("chat", json("user_id" to backend.currentUser(group), "intent" to "chat"), group)
-            ?: throw UserError("图片识别需要手机直连模型，请确认服务器支持手机 AI 会话")
+            ?: throw UserError("图片识别需要新版应用与服务器 AI 代理支持，请升级后重试")
         var success = false
         try {
             val messages = JSONArray().put(message("system",
@@ -487,15 +490,15 @@ object AiAgent {
         throw UserError("查询已达调用上限，请重试或手动填写")
     }
     private suspend fun search(s: Opened, query: String, extraAllowed: () -> Boolean): List<JSONObject> {
-        val found = s.http!!.json("https://api.tavily.com/search",
-            json("query" to query, "max_results" to 5, "search_depth" to "basic", "include_answer" to false), "tavily")
+        val found = providerJson(s, "tavily", "/search",
+            json("query" to query, "max_results" to 5, "search_depth" to "basic", "include_answer" to false))
             .getJSONArray("results").objects().mapNotNull {
                 runCatching { val url = UrlPolicy.publicUrl(it.getString("url")); json("title" to it.getString("title").take(300),
                     "url" to url.toString(), "content" to it.getString("content").take(8000)) }.getOrNull()
             }.toMutableList()
         if (s.settings.optBoolean("duckduckgo_enabled") && extraAllowed()) {
             try {
-                val page = s.http!!.page("https://html.duckduckgo.com/html/?q=" + URLEncoder.encode(query, "UTF-8"))
+                val page = NativeHttp(s.settings.getInt("timeout_seconds")).page("https://html.duckduckgo.com/html/?q=" + URLEncoder.encode(query, "UTF-8"))
                 if (!Regex("anomaly|captcha|bots|challenge", RegexOption.IGNORE_CASE).containsMatchIn(page.getString("content")))
                     found += page.put("title", "DuckDuckGo 搜索页面")
             } catch (e: CancellationException) { throw e } catch (_: Exception) { /* Tavily remains required. */ }
@@ -533,7 +536,7 @@ object AiAgent {
                 "/chat/completions"
             }
         }
-        val r = s.http!!.json(settings.getString("base_url").trimEnd('/') + path, body, "llm", protocol == "anthropic")
+        val r = providerJson(s, "llm", path, body)
         val sources = linkedMapOf<String, JSONObject>()
         val text = StringBuilder()
         fun add(value: Any) {
@@ -578,7 +581,7 @@ object AiAgent {
         val s = if (image) backend.open("chat", json("user_id" to backend.currentUser(group), "intent" to "chat"), group)
             else if (phone) backend.open("lookup", json("query" to text), group) else null
         if (s == null) {
-            if (image) throw UserError("图片识别需要手机直连模型，请确认服务器支持手机 AI 会话")
+            if (image) throw UserError("图片识别需要新版应用与服务器 AI 代理支持，请升级后重试")
             ApiClient.sse("/ai/lookup", json("query" to text), group, emit); return
         }
         val budget = LoopBudget(s.settings)

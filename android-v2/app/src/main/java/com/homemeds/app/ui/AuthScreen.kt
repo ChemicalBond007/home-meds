@@ -2,9 +2,15 @@ package com.homemeds.app.ui
 
 import android.content.ClipData
 import android.content.ClipboardManager
+import android.content.ClipDescription
+import android.content.Context
 import android.content.Intent
 import android.graphics.Bitmap
 import android.net.Uri
+import android.os.Build
+import android.os.Handler
+import android.os.Looper
+import android.os.PersistableBundle
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.Image
@@ -23,6 +29,26 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import org.json.JSONObject
+import java.util.UUID
+
+internal fun copyTotpSecret(context: Context, secret: String) {
+    val clipboard = context.getSystemService(ClipboardManager::class.java)
+    val marker = UUID.randomUUID().toString()
+    val clip = ClipData.newPlainText("验证器密钥", secret).apply {
+        description.extras = PersistableBundle().apply {
+            putBoolean(if (Build.VERSION.SDK_INT >= 33) ClipDescription.EXTRA_IS_SENSITIVE else "android.content.extra.IS_SENSITIVE", true)
+            putString("homeMedsClip", marker)
+        }
+    }
+    clipboard.setPrimaryClip(clip)
+    Handler(Looper.getMainLooper()).postDelayed({
+        // Never erase unrelated content copied since this secret.
+        if (clipboard.primaryClipDescription?.extras?.getString("homeMedsClip") == marker) clipboard.clearPrimaryClip()
+    }, 60000)
+}
+
+internal fun authenticatorChooser(uri: String): Intent =
+    Intent.createChooser(Intent(Intent.ACTION_VIEW, Uri.parse(uri)), "选择验证器")
 
 @Composable fun AuthScreen(vm: AppViewModel, state: AppState) {
     if (state.bindingOnly) { TotpSetup(vm) { vm.bound() }; return }
@@ -79,10 +105,10 @@ import org.json.JSONObject
                 SelectionContainer { Text("手动密钥：${data.getString("secret")}") }
                 ActionRow {
                     Action("复制手动密钥", secondary = true) {
-                        (context.getSystemService(ClipboardManager::class.java)).setPrimaryClip(ClipData.newPlainText("验证器密钥", data.getString("secret")))
+                        copyTotpSecret(context, data.getString("secret"))
                     }
                     Action("打开本机验证器", secondary = true) {
-                        runCatching { context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(uri))) }.onFailure { vm.error("未找到支持的验证器，请扫描二维码或手动输入密钥") }
+                        runCatching { context.startActivity(authenticatorChooser(uri)) }.onFailure { vm.error("未找到支持的验证器，请扫描二维码或手动输入密钥") }
                     }
                 }
                 Field("验证器当前 6 位验证码", code, { code = it.filter(Char::isDigit).take(6) }, secret = true)

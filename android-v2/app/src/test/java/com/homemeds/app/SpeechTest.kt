@@ -174,7 +174,7 @@ class SpeechTest {
         assertNull(speechRecognitionActivity(context))
         val component = registerService()
         Settings.Secure.putString(context.contentResolver, "voice_recognition_service", "missing/.Service")
-        assertEquals(component, speechRecognitionService(context))
+        assertNull(speechRecognitionService(context))
         Settings.Secure.putString(context.contentResolver, "voice_recognition_service", component.flattenToString())
         assertEquals(component, speechRecognitionService(context))
     }

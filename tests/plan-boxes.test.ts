@@ -3,8 +3,13 @@ import { env } from 'cloudflare:workers';
 import { app } from '../src/worker';
 import { hash } from '../src/worker/crypto';
 import { localClock } from '../src/shared/schedule';
-import type { Plan } from '../src/shared/types';
-import type { PlanBoxes } from '../src/client/plan-boxes';
+import type { Plan, StockItem } from '../src/shared/types';
+
+interface PlanBoxes {
+  boxes: StockItem[];
+  preferred_stock_item_id: string | null;
+  last_stock_item_id: string | null;
+}
 
 const date = () => localClock(new Date(), 'Asia/Shanghai').date;
 const draft = (overrides: object = {}) => ({

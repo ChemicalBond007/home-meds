@@ -208,12 +208,12 @@ fun parseProposal(o: JSONObject, target: String): Proposal {
         }) { intake = null }
     }
     editor?.let { p -> PlanEditor(state, p.draft, { editor = null }) { body ->
-        vm.save(if (p.operation == "create") "POST" else "PUT", "/plans" + (p.planId?.let { "/$it" } ?: ""), body) {
+        vm.save(if (p.operation == "create") "POST" else "PUT", "/plans" + (p.planId?.let { "/${pathSegment(it)}" } ?: ""), body) {
             proposals = proposals.filterNot { it.id == p.id }; editor = null
         }
     } }
     pause?.let { p -> Confirm("确认暂停正式计划", "暂停 ${p.draft.getString("medicine_name")}？此操作会更新日历与提醒。", { pause = null }) {
-        vm.save("DELETE", "/plans/${p.planId}") { proposals = proposals.filterNot { it.id == p.id }; pause = null }
+        vm.save("DELETE", "/plans/${pathSegment(p.planId)}") { proposals = proposals.filterNot { it.id == p.id }; pause = null }
     } }
 }
 
@@ -276,7 +276,7 @@ internal data class ChatVoiceInput(val busy: Boolean, val listening: Boolean, va
             busy = true
             val activity = speechRecognitionActivity(context)
             if (activity == null) fallback()
-            else runCatching { popup.launch(speechRecognitionIntent().setComponent(activity)) }
+            else runCatching { popup.launch(speechRecognitionIntent()) }
                 .onFailure { fallback() }
         }
     }, cancel = { listening?.cancel() })

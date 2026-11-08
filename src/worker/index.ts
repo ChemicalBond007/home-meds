@@ -22,7 +22,9 @@ app.use('/api/*', async (c, next) => {
   await next();
 });
 app.use('/api/*', audit);
-app.use('/api/*', bodyLimit({ maxSize: 256 * 1024 }));
+app.use('/api/*', (c, next) => bodyLimit({
+  maxSize: c.req.path === '/api/app/ai/provider' && c.req.method === 'POST' ? 4 * 1024 * 1024 : 256 * 1024,
+})(c, next));
 app.route('/api', auth);
 app.use('/api/*', mutationSnapshot);
 app.route('/api', bootstrap);

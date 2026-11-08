@@ -216,7 +216,7 @@ class ChatUiTest {
         compose.onNodeWithText("中文语音输入").assertDoesNotExist()
         compose.onNodeWithText("生成待确认草稿").assertDoesNotExist()
         compose.onNodeWithText("计划对象").assertDoesNotExist()
-        compose.onNodeWithText("手机直接连接模型（设备加密凭据）").assertDoesNotExist()
+        compose.onNodeWithText("手机运行 AI 循环（Worker 代理）").assertDoesNotExist()
     }
 
     @Test fun suggestionsComeFromModelAndOnlyFillInputUntilExplicitSend() {
@@ -268,7 +268,7 @@ class ChatUiTest {
         compose.onNodeWithText("计划对象").assertExists()
         compose.onNodeWithText("本人").performClick()
         compose.onNodeWithText("家人").performClick()
-        compose.onNodeWithText("手机直接连接模型（设备加密凭据）").performClick()
+        compose.onNodeWithText("手机运行 AI 循环（Worker 代理）").performClick()
         compose.runOnIdle { assertEquals("u2", assistantTarget(state)); assertFalse(state.assistantPhone) }
     }
 

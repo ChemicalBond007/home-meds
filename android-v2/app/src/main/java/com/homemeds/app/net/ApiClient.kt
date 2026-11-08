@@ -97,7 +97,8 @@ class NativeApi(
     }
 
     suspend fun raw(method: String, path: String, body: JSONObject? = null, groupId: String? = activeGroup(), timeout: Long = 30, state: String? = null): String {
-        val call = http.newBuilder().callTimeout(timeout, TimeUnit.SECONDS).build().newCall(request(method, path, body, groupId, state))
+        val call = http.newBuilder().readTimeout(timeout, TimeUnit.SECONDS).callTimeout(timeout, TimeUnit.SECONDS).build()
+            .newCall(request(method, path, body, groupId, state))
         return call.consume { response ->
             capture(response)
             val source = response.body.source()
@@ -112,13 +113,23 @@ class NativeApi(
         JSONObject(raw(method, path, body, groupId, state = state))
     suspend fun array(path: String, groupId: String? = activeGroup()) = JSONArray(raw("GET", path, groupId = groupId))
 
-    suspend fun sse(path: String, body: JSONObject, groupId: String? = activeGroup(), emit: suspend (String, Any) -> Unit) {
-        val call = http.newBuilder().readTimeout(150, TimeUnit.SECONDS).callTimeout(180, TimeUnit.SECONDS).build()
+    suspend fun <T> stream(path: String, body: JSONObject, groupId: String? = activeGroup(), timeout: Long = 180,
+        block: suspend (Response) -> T): T {
+        val call = http.newBuilder().readTimeout(timeout, TimeUnit.SECONDS).callTimeout(timeout, TimeUnit.SECONDS).build()
             .newCall(request("POST", path, body, groupId).newBuilder().header("Accept", "text/event-stream").build())
-        call.consume { response ->
+        return call.consume { response ->
             capture(response)
-            if (!response.isSuccessful) error(response, response.body.string().take(4000))
+            if (!response.isSuccessful) {
+                val source = response.body.source()
+                source.request(4000)
+                error(response, source.readUtf8(minOf(source.buffer.size, 4000)))
+            }
             if (!response.header("Content-Type").orEmpty().startsWith("text/event-stream")) throw IOException("服务器未返回事件流")
+            block(response)
+        }
+    }
+    suspend fun sse(path: String, body: JSONObject, groupId: String? = activeGroup(), emit: suspend (String, Any) -> Unit) {
+        stream(path, body, groupId) { response ->
             var finished = false
             readSse(response.body.charStream().buffered()) { event, data ->
                 val value = JSONTokener(data).nextValue()
@@ -146,4 +157,6 @@ object ApiClient {
     suspend fun request(method: String, path: String, body: JSONObject? = null, groupId: String? = prefs.activeGroupId) = client.obj(method, path, body, groupId)
     suspend fun array(path: String, groupId: String? = prefs.activeGroupId) = client.array(path, groupId)
     suspend fun sse(path: String, body: JSONObject, groupId: String?, emit: suspend (String, Any) -> Unit) = client.sse(path, body, groupId, emit)
+    suspend fun <T> stream(path: String, body: JSONObject, groupId: String?, timeout: Long = 180,
+        block: suspend (Response) -> T) = client.stream(path, body, groupId, timeout, block)
 }

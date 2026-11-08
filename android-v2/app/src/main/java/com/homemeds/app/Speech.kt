@@ -43,7 +43,7 @@ internal fun speechRecognitionService(context: Context): ComponentName? {
         .map { ComponentName(it.serviceInfo.packageName, it.serviceInfo.name) }
     val configured = Settings.Secure.getString(context.contentResolver, "voice_recognition_service")
         ?.let(ComponentName::unflattenFromString)
-    return services.firstOrNull { it == configured } ?: services.firstOrNull()
+    return services.firstOrNull { it == configured }
 }
 
 internal interface SpeechEngine {

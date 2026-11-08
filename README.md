@@ -14,6 +14,7 @@
 | [`android-v2/README.md`](android-v2/README.md) | 原生 Android 客户端（Jetpack Compose）编译、功能细节、AI Agent Loop、本地提醒与 SemVer 版本策略 |
 | [`docs/architecture.md`](docs/architecture.md) | 系统架构拓扑、源码模块职责、D1 数据库 Schema 与触发器、加密认证模型、AI 搜索与提醒设计 |
 | [`docs/api.md`](docs/api.md) | Worker HTTP / SSE 接口手册（聚合同步、认证安全、药品库存、计划服药、AI 与全局使用日志） |
+| [`docs/optimization.md`](docs/optimization.md) | 遗留代码清理范围、APK 瘦身方式与体积对比 |
 
 ---
 
@@ -30,7 +31,7 @@
 | **网页管理台与下载页** | `src/client/`、`pages/` | React 19 + Vite 8 + TypeScript | **管理台仅限管理员访问，下载页公开**。提供「账号安全」（TOTP 验证器、WebAuthn 通行密钥、恢复码）、「家庭设置」（家庭、成员、药箱、管理员重置）、「AI 配置」（模型、搜索来源、配额与接口检测）及「应用下载」（APK 下载链接）。普通成员会话访问管理台会被拒绝，但可访问 `/download`，且不影响其手机端权限。 |
 | **服务端 API 与定时任务** | `src/worker/`、`migrations/` | Cloudflare Worker + Hono + D1 + WebCrypto | 提供 REST / SSE API、D1 关系型数据存储与 SQLite 事务触发器、HKDF/AES-GCM 密钥加解密、操作审计日志，以及每 5 分钟运行的 Cron Web Push 提醒任务。 |
 | **跨端共享模型** | `src/shared/` | TypeScript + Zod 4 | 前后端共用的数据校验 Schema、GS1 / GTIN / 20 位药品追溯码解析器、跨时区/DST 日程计算与今日清单状态推导。 |
-| **原生 Android 客户端** | `android-v2/` | Kotlin + Jetpack Compose + CameraX + ML Kit + ZXing + WorkManager | 应用 ID `com.homemeds.app.v2`（当前 `2.6.0 / 20600`）。支持分组码优先注册与扫码填写；承载普通成员、老人模式与管理员的全部日常功能：今日清单、两步核对服药、扫码/多角度拍照识药入库、有效期/批号特写识别、库存流水、服药计划、AI 语音/多模态助手、本地日历与精确闹钟提醒，以及管理员全局使用日志。 |
+| **原生 Android 客户端** | `android-v2/` | Kotlin + Jetpack Compose + CameraX + ML Kit + ZXing + WorkManager | 应用 ID `com.homemeds.app.v2`（当前 `2.8.0 / 20800`）。支持分组码优先注册与扫码填写；承载普通成员、老人模式与管理员的全部日常功能：今日清单、两步核对服药、扫码/多角度拍照识药入库、有效期/批号特写识别、库存流水、服药计划、AI 语音/多模态助手、本地日历与精确闹钟提醒，以及管理员全局使用日志。 |
 
 ---
 
@@ -66,7 +67,7 @@
   - **内置搜索**：支持 OpenAI Responses API `web_search`、Chat Completions 联网参数（默认 `enable_search=true` 或自定义 JSON 如 `{"web_search_options":{}}`）以及 Anthropic 兼容 `/v1/messages` 服务端 `web_search`（DeepSeek 默认）。后台提供一键「检测内置搜索并自动选择搜索来源」，仅当接口返回结构化引用/搜索结果块时才采信。正式查询若内置搜索失败或无来源会明确报错，**不会隐式回退到外部搜索**。
   - **外部搜索**：支持 Tavily Search API 与可选的 DuckDuckGo HTML 检索，配合逐跳校验公网地址、防 SSRF 的 `fetch_page` 工具（10 秒超时、2 MB 响应上限、提取正文截断至 20 KB、仅允许读取本轮搜索结果中的 URL）。
 - **只读工具与待确认草稿隔离**：对话助手通过 `find_medicines` 与 `list_medicines` 只读检索本家庭药箱目录，通过 `add_plan_draft`、`propose_plan_update`、`propose_plan_pause` 生成经过 Zod 校验的待确认计划卡片（Android 2.x 还支持 `propose_medicine_draft` 药品入库草稿）。**AI 工具无任何数据库写权限**，所有草稿仅保存在客户端内存中，必须由用户打开卡片核对确认后才调用正式写接口落库。
-- **手机端安全直连**：Android 客户端通过系统 Keystore 生成 RSA-2048 密钥对，经 `POST /api/app/ai/session` 接收由 RSA-OAEP-SHA1 + AES-256-GCM 封装的 15 分钟临时凭据，仅在原生层解密并严格注入到已配置的提供商 HTTPS 根路径下（禁止重定向），数据库工具仍回调 Worker `/api/app/ai/tool` 执行。
+- **手机循环与 Worker 代理**：Android 保留本地 agent 循环，模型与 Tavily 请求经 Worker 注入密钥、校验会话与调用预算，提供商密钥不下发。数据库工具仍在 Worker 执行。
 
 ### 6. 请求聚合与写后快照优化
 - **管理台一次初始化**：网页管理台首次加载仅请求一次 `GET /api/admin/bootstrap`，一次性获取账号安全状态（含通行密钥列表与恢复码余量）、家庭/成员/药箱列表及脱敏 AI 配置。
@@ -77,6 +78,19 @@
 - **多因素绑定与恢复**：首位管理员通过命令行生成 7 天有效的临时密码登录（处于 `binding_only` 受限会话），在浏览器本地生成 TOTP 二维码（不调用外部二维码服务）或注册 WebAuthn 通行密钥后，自动签发 10 个一次性恢复码并使临时密码失效。支持按管理员查看与逐把撤销通行密钥，以及通过二次验证（TOTP 或通行密钥）重新生成恢复码。
 - **五类全局使用日志**：全局管理员可在 Android 2.x「设置 → 使用日志」跨家庭筛选查看 **操作审计（`audit`）、AI 查询明细（`ai_queries`）、AI 配额用量（`ai_usage`）、服药记录（`doses`）、库存流水（`stock`）**，支持游标分页。操作审计仅记录时间、用户/家庭快照、操作类型、HTTP 状态、路由模板与对象编号，**绝不记录密码、验证码、恢复码、密钥、Cookie、IP 或聊天原文**；审计写入失败时记录 `audit_write_failed` 告警，不会使已提交的业务操作报错回滚。
 
+---
+
+## 2.7.0 安全升级与运维要求
+
+提供商长期密钥只在 Worker 中解密、注入，不再下发给 Android。手机保留 agent 循环、多图识别、网页读取和本地草稿工具，通过 `POST /api/app/ai/provider` 代理模型与 Tavily 请求。会话绑定当前用户及家庭，有效期 15 分钟；每会话模型最多 12 次、搜索最多 5 次，路径白名单、模型、输出 token 上限、超时及禁止跟随重定向均由 Worker 强制执行。聊天中的公开检索单独申请 lookup 会话，不能借聊天会话绕过检索配额。只有代理路由使用 4 MiB 请求体上限，其余 API 保持 256 KiB。
+
+旧版 APK 携带 `public_key` 申请会话时收到 `501`，文字查药/对话自动回退到 Worker `/ai/lookup`、`/ai/chat`；旧版照片识别不再可用，需升级到 2.7.0。新版不上传设备公钥，也不接收加密凭据。
+
+迁移 `0008_security_fixes.sql` 增加代理调用计数、Push 重试次数及订阅失败计数，并清空来源不可信的共享药品缓存。只有管理员保存的 confirmed 药品可写共享缓存，读写均仅保留 `name, generic_name, manufacturer, specification, indications, precautions, base_unit, units_per_package, sources`，不含追溯码、状态、批号或有效期。
+
+Push 订阅每用户每小时限 10 次，最多保留最新 5 个。首次发送失败后最多重试 3 次，间隔 5/10/20 分钟；订阅成功后失败计数清零，连续失败 10 次删除，404/410 立即清理。每轮 Cron 全局最多 150 条、每家庭最多 30 条，并发 6、单次超时 5 秒；未领取任务留待下一轮。
+
+**部署后必须在管理台轮换 LLM 和 Tavily 密钥，并在提供商侧撤销旧密钥。历史下发的长期密钥应视为已泄露，15 分钟会话期限从未使其失效。** 轮换提供商密钥，不要替换 `APP_ENC_KEY`。先应用迁移再发布新 Worker，迁移到发布之间旧 Worker 仍可能重新写入共享缓存，应缩短窗口并在切换后确认清理。这里仅说明发布要求，本次修复不执行部署、远程迁移或密钥轮换。
 ---
 
 ## 快速开始（本地开发）
@@ -242,7 +256,7 @@ npm run check:pages
 ```
 
 - 测试运行于 `@cloudflare/vitest-plugin` 提供的真实 `workerd` 运行时、真实本地 D1 与 WebCrypto 环境中，外部 AI、搜索与推送端点通过 `tests/fetch.ts` 模拟（完整经过 `workerd` 的 `Request` 构造校验，如 `redirect: 'error'`）。
-- `tests/` 目录共 25 个测试文件，覆盖：跨时区/DST 日程计算、GS1/GTIN/追溯码解析、并发扣库存与乐观锁回滚、重复服药拦截、当日撤销幂等、家庭数据隔离、`binding_only` 受限会话、TOTP 防重放、一次性恢复码与通行密钥重生成挑战绑定、管理台通行密钥列举与删除、操作审计脱敏与写入故障隔离、五类全局日志跨家庭筛选与游标分页、AI 能力探测、内置搜索结构化引用校验、格式修复预算、草稿不落库、流式失败审计、Web Push 加密去重、跨午夜家属提醒及 `410 Gone` 失效订阅清理。
+- `tests/` 覆盖：跨时区/DST 日程计算、GS1/GTIN/追溯码解析、并发扣库存与乐观锁回滚、重复服药拦截、当日撤销幂等、家庭数据隔离、`binding_only` 受限会话、TOTP 防重放、一次性恢复码与通行密钥重生成挑战绑定、管理台通行密钥列举与删除、操作审计脱敏与写入故障隔离、五类全局日志跨家庭筛选与游标分页、AI 能力探测、内置搜索结构化引用校验、格式修复预算、草稿不落库、流式失败审计、Web Push 加密去重、跨午夜家属提醒及 `410 Gone` 失效订阅清理。已退役网页日常业务的专用 UI 测试随对应模块移除，服务端业务测试与 Android 测试保留。
 
 ### 2. Android 客户端测试（JUnit + Robolectric + Compose UI Test）
 
@@ -250,12 +264,14 @@ npm run check:pages
 
 ```powershell
 .\gradlew.bat testDebugUnitTest lintDebug assembleDebug
+# 发布包使用代码与资源压缩；默认未签名，分发前须使用自己的正式签名密钥。
+.\gradlew.bat lintRelease assembleRelease
 ```
 
 ### 3. 响应式布局与无障碍回归
 
-- **响应式布局自检页**：启动 `npm run dev` 后，在浏览器打开 `http://127.0.0.1:5173/tests/fixtures/responsive.html`，在开发者工具控制台运行 `await runResponsiveChecks()`。该工具使用合成数据并拦截所有网络请求，自动遍历 `320px` 至 `1440px` 共 9 种视口宽度下的 189 个界面与弹窗场景，检测横向溢出、移动端单列表单与导航切换，返回的 `failures` 应为空数组。
-- **无障碍检查（WCAG 2.1 AA）**：在 `390×844` 视口下通过 axe 检查老人首页、扫码入口与服药确认弹窗，颜色对比度与触控尺寸均满足 AA 标准。
+- **响应式布局自检页**：启动 `npm run dev` 后，在浏览器打开 `http://127.0.0.1:5173/tests/fixtures/responsive.html`，在开发者工具控制台运行 `await runResponsiveChecks()`。该工具使用合成数据并拦截 API 请求，禁止写操作；遍历 `320px` 至 `1440px` 共 9 种视口宽度，检查管理员账号安全、家庭设置、编辑弹窗、分组码二维码、AI 配置、下载设置、登录、首次绑定、空家庭与公开下载页，检测横向溢出和移动端单列表单，返回的 `failures` 应为空数组。
+- **无障碍回归**：网页检查管理台与下载页的键盘操作、弹窗标签和颜色对比；老人模式与服药核对的交互回归由 Android Compose UI 测试覆盖。
 
 ---
 
@@ -265,29 +281,30 @@ npm run check:pages
 .
 ├── .github/workflows/
 │   └── checks.yml            # CI 检查与 main 分支自动部署流水线（D1 迁移 → Worker → Pages）
-├── android-v2/               # 原生 Android 2.6.0 Jetpack Compose 客户端（com.homemeds.app.v2）
+├── android-v2/               # 原生 Android 2.8.0 Jetpack Compose 客户端（com.homemeds.app.v2）
 ├── docs/                     # 架构设计与服务端 API 详细文档
 │   ├── architecture.md       # 系统架构、D1 数据模型、安全加密与 AI/提醒工作流说明
 │   └── api.md                # HTTP / SSE API 路由、请求头、参数与响应格式手册
-├── migrations/               # Cloudflare D1 SQLite 迁移脚本（0001 至 0007）
+├── migrations/               # Cloudflare D1 SQLite 迁移脚本（0001 至 0008）
 │   ├── 0001_initial.sql      # 核心表结构、索引与服药扣库存/撤销恢复 SQLite 触发器
 │   ├── 0002_stock_movements.sql # 出库/报废/移库校验与库存状态更新触发器
 │   ├── 0003_code_integrity.sql  # 药品条码映射不可变性约束触发器
 │   ├── 0004_audit_logs.sql   # 管理员操作审计日志表与多维索引
 │   ├── 0005_stock_metadata_version.sql # 药盒资料版本乐观锁与追溯码前缀同步触发器
 │   ├── 0006_plan_preferred_box.sql     # 服药计划优先药盒（preferred_stock_item_id）字段扩展
-│   └── 0007_app_ai_sessions.sql        # 原生客户端 AI 临时会话与工具调用配额表
+│   ├── 0007_app_ai_sessions.sql        # 原生客户端 AI 临时会话与工具调用配额表
+│   └── 0008_security_fixes.sql         # AI 代理/Push 计数与共享缓存清理
 ├── pages/                    # Cloudflare Pages 部署配置与 /api/* 服务绑定转发函数
 │   ├── functions/api/[[path]].ts
 │   └── wrangler.jsonc
-├── public/                   # PWA Manifest、Service Worker、离线兜底页与自托管图标
+├── public/                   # 管理台图标与 Manifest，保留旧 Service Worker 的迁移兼容资源
 ├── scripts/                  # 运维与构建校验脚本
 │   ├── admin-create.mjs      # 创建管理员账号与 7 天临时密码
 │   ├── check-built-css.mjs   # 校验构建产物 CSS 的 WebView 87 兼容性
 │   ├── probe-ai.mjs          # 本地实测 LLM 与 Tavily 接口连通性及耗时
 │   └── vapid.mjs             # 生成 Web Push VAPID 密钥对
 ├── src/
-│   ├── client/               # React 19 网页管理台源码（账号安全、家庭设置、AI 配置、扫码组件）
+│   ├── client/               # React 19 管理台与公开下载页（不含日常服药与 WebView 桥接代码）
 │   ├── shared/               # 前后端共享模块（Zod Schema、条码/GS1/追溯码解析、跨时区日程计算）
 │   └── worker/               # Cloudflare Worker Hono 后端源码（认证、库存、计划、AI、推送、审计）
 ├── tests/                    # Vitest + workerd 集成测试与本地演示数据（fixtures/demo.sql、responsive.html）
@@ -309,7 +326,7 @@ npm run check:pages
 3. **提醒不等于已服药**：无论是 Web Push 还是 Android 本地日历/精确闹钟，均可能受设备断网、关机、系统休眠、国产 ROM 后台限制或缺少推送服务影响而延迟或漏发；收到提醒绝不代表已经完成服药。
 4. **主加密密钥（`APP_ENC_KEY`）不可丢失**：服务端使用 `APP_ENC_KEY` 经 HKDF 派生出独立的 AES-GCM 密钥来加密管理员 TOTP 密钥与后台 LLM/Tavily API 密钥。一旦丢失或直接替换 `APP_ENC_KEY`，已有加密数据将无法解密（当前不包含密钥轮换重加密迁移工具）。
 5. **应用内审计非防篡改合规存证**：`audit_logs` 是保存在同一 D1 数据库中的应用层只读审计记录，用于家庭管理员日常排查，不具备独立硬件或外部 WORM 防篡改能力。
-6. **手机端 AI 直连的内存边界**：Android 客户端开启「手机直接连接模型」时，服务端下发的加密凭据会在手机原生层内存中短暂解密以直连提供商 HTTPS 接口。在已 Root 或开启调试注入的设备上存在被读取内存的理论风险；如介意可在「设置 → 助手偏好」中关闭手机直连，改走服务端 SSE。
+6. **历史提供商密钥风险**：旧版曾向调用方下发可解封的长期凭据，必须在部署修复后轮换并撤销 LLM/Tavily 旧密钥。新版 Android 只经 Worker 代理调用提供商，手机循环开关不再改变密钥边界。
 
 ---
 

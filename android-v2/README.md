@@ -1,6 +1,6 @@
-# 赛博药箱 2.6.0：原生 Android 客户端（`android-v2/`）
+# 赛博药箱 2.8.0：原生 Android 客户端（`android-v2/`）
 
-`android-v2/` 是**赛博药箱**的主力原生 Android 客户端（当前版本 **`2.6.0` / `versionCode = 20600`**），基于 **Kotlin + Jetpack Compose** 构建，不嵌入 WebView 浏览器，也不下载网页端静态资源。客户端直接通过 `/api/*` JSON 与 SSE 接口与 Cloudflare Worker 后端通信；开启手机端 AI 直连时，可直接请求后台配置的 LLM 模型、Tavily 搜索与公开药品网页。
+`android-v2/` 是**赛博药箱**的主力原生 Android 客户端（当前版本 **`2.8.0` / `versionCode = 20800`**），基于 **Kotlin + Jetpack Compose** 构建，不嵌入 WebView 浏览器，也不下载网页端静态资源。客户端直接通过 `/api/*` JSON 与 SSE 接口与 Cloudflare Worker 后端通信；手机运行 AI 循环时，经 Worker 代理访问模型与 Tavily，只对公开网页执行无密钥直连。
 
 ---
 
@@ -37,9 +37,15 @@ cd android-v2
 # 如系统默认 JAVA_HOME 不是 JDK 21，请先指定：
 # $env:JAVA_HOME = '<JDK 21 安装路径>'
 .\gradlew.bat testDebugUnitTest lintDebug assembleDebug
+# 正式版（开启 R8 代码压缩、优化与混淆，以及资源压缩）：
+.\gradlew.bat lintRelease assembleRelease
+# 可选：仅支持 ARM64 设备的更小安装包，默认仍构建兼容四种 ABI 的通用包：
+.\gradlew.bat assembleRelease -PhomeMedsAbis=arm64-v8a
 ```
 
-- **构建产物**：`android-v2/app/build/outputs/apk/debug/赛博药箱-2.6.0.apk`
+- **调试产物**：`android-v2/app/build/outputs/apk/debug/赛博药箱-2.8.0.apk`，保留调试工具，不代表最终分发体积。
+- **正式产物**：`android-v2/app/build/outputs/apk/release/赛博药箱-2.8.0.apk`。当前未配置正式签名，分发前必须使用自己的签名密钥；不要用调试密钥替代。保存 `app/build/outputs/mapping/release/mapping.txt` 以便还原混淆堆栈。
+- **按设备架构精简**：`-PhomeMedsAbis=arm64-v8a` 生成 `赛博药箱-2.8.0-arm64-v8a.apk`；也支持逗号分隔的 `arm64-v8a,armeabi-v7a,x86,x86_64` 子集。此参数只裁剪本地库，不移除离线扫码模型；仅在明确设备 ABI 时使用，不能将 ARM64 专用包分发给 32 位设备或 x86 模拟器。体积对比见 [`docs/optimization.md`](../docs/optimization.md)。
 - **地址优先级**：命令行 `-PhomeMedsBaseUrl=https://...` > `android-v2/local.properties` 中的 `homeMedsBaseUrl` > 仓库默认占位符 `https://your-domain.example.com`。正式客户端仅支持 HTTPS，不支持明文 HTTP。
 
 ---
@@ -66,12 +72,11 @@ android-v2/app/src/
 │       ├── Reminders.kt                     # 48 小时精确闹钟编排、开机恢复与响铃前服务端实时核对
 │       ├── Sync.kt                          # WorkManager 6 小时周期任务与防抖提醒同步协调
 │       ├── Speech.kt                        # 系统中文语音识别（SpeechRecognizer）与中文语音朗读（TextToSpeech）
-│       ├── DeviceKeys.kt                    # Android Keystore RSA-2048 密钥对生成与管理
-│       ├── Policy.kt                        # 公网 URL/DNS 校验（防 SSRF）、KeyPolicy 路径隔离与 RSA-OAEP+AES-GCM 解封
+│       ├── Policy.kt                        # 公网 URL/DNS 校验（防 SSRF）与 ID 路径段校验
 │       ├── net/
 │       │   ├── ApiClient.kt                 # 服务端 API 调用封装、SSE 流解析与多模态/日期识别请求
 │       │   ├── AppRepository.kt             # /api/app/bootstrap 与 /api/app/sync 聚合读取、X-HomeMeds-State 写后快照与 404 回退
-│       │   ├── NativeHttp.kt                # OkHttp 客户端、同源 Origin / Cookie / X-Group-Id 注入与公网抓取
+│       │   ├── NativeHttp.kt                # 无密钥公网网页抓取、禁用系统代理与逐跳 DNS 校验
 │       │   ├── AiAgent.kt                   # 手机端统一 AI Agent Loop、多模态识药、工具调用与搜索协调
 │       │   └── ReplySuggestions.kt          # 流式 <suggested_replies> 推荐回复提取与正文标签剥离过滤器
 │       └── ui/
@@ -89,7 +94,7 @@ android-v2/app/src/
 │           ├── PackagePhotoControl.kt       # 入库与药盒编辑页「拍照识别有效期 / 批号」特写识别控件与年月提示
 │           ├── MedicineCamera.kt            # 系统相机 FileProvider 拍照调度、权限处理与 PhotoEncoder 图像压缩脱敏
 │           └── Theme.kt                     # 色彩令牌、WCAG AA 对比度与普通模式（48dp）/ 老人模式（60dp、22sp）排版系统
-└── test/java/com/homemeds/app/              # JUnit 4 + Robolectric + Compose UI 单元测试套件（28 个测试类）
+└── test/java/com/homemeds/app/              # JUnit 4 + Robolectric + Compose UI 单元测试套件（29 个测试类）
 ```
 
 ---
@@ -112,7 +117,8 @@ android-v2/app/src/
   - 提交时携带药盒 `expected_stock_version` 乐观锁，支持记录服药、跳过本次及当日撤销（原子恢复库存）。
 
 ### 2. 药箱库存、药品资料与出入库向导
-- 分段标签查看「在库药盒」（搜索框旁的状态下拉可筛选在库、用尽、报废、全部）、「药品资料」与「库存流水」；点按药品资料卡片查看通用名、适应症、注意事项与来源。
+- 分段标签查看「在库药盒」、「药品资料」与「库存流水」；点按药品资料卡片查看通用名、适应症、注意事项与来源。
+- **在库药盒筛选与排序**：搜索框可匹配药名、批号、药箱名与追溯码；下方快捷标签可按状态（在库/用尽/报废/全部）、药箱筛选，并切换排序（有效期从早到晚/从晚到早、药名、余量从少到多/从多到少、最近入库、按药箱分组）。「更多筛选」对话框还可按药品、有效期（已过期、30 天内到期、未过期、未填写）和开封状态筛选。未填写有效期的药盒在两种有效期排序下都排在最后；余量为 0 的在库药盒按「用尽」筛选。列表上方显示「显示 N / 总数 盒」及当前条件，可一键「恢复默认」。筛选与排序按家庭保存在本机，已删除的药箱或药品条件会自动视为「全部」。
 - 药盒卡片「⋮」菜单提供用掉、移到另一药箱与报废；管理员卡片上直接显示「修改药盒资料」。入库向导按钮按行排列，AI 检索收在可展开区域。
 - 管理员可直接编辑共用药品资料与条码前缀映射，或通过带 `expected_version` 乐观锁的表单修改具体药盒的有效期、批号、序列号、追溯码、每盒装量与开封状态。
 
@@ -122,7 +128,7 @@ android-v2/app/src/
 
 ### 4. 设置中心与管理员能力
 - 设置页是一个短菜单，每一行打开带返回箭头的子页面（导航路由 `settings/*`）。
-- **所有成员可见**：助手偏好（计划对象选择、是否开启「手机直接连接模型」）、日历与提醒（同步哪些家人的计划、日历响铃与应用通知开关、上次同步与「立即同步」）、权限与后台（日历、通知、精确闹钟、电池优化各一行，显示状态与「去开启」）、账号与安全（账号、验证器与恢复码状态、「重新生成恢复码」对话框、退出登录）。
+- **所有成员可见**：助手偏好（计划对象选择、是否开启「手机运行 AI 循环」）、日历与提醒（同步哪些家人的计划、日历响铃与应用通知开关、上次同步与「立即同步」）、权限与后台（日历、通知、精确闹钟、电池优化各一行，显示状态与「去开启」）、账号与安全（账号、验证器与恢复码状态、「重新生成恢复码」对话框、退出登录）。
 - **管理员专属**：
   - 账号安全：TOTP 验证器本地二维码生成与唤起、一次性恢复码生成（在对话框中输入 6 位验证码）与保存为本地文件。
   - 家庭管理：顶栏家庭切换下拉、创建家庭、设置三餐时间、成员移组与老人模式开关、药箱新增/改名/删除（列表行的「⋮」菜单）、在选择对话框中重置其他管理员验证方式。
@@ -142,7 +148,7 @@ android-v2/app/src/
 - **输入区集成动作**：输入区左下角为拍照/选图按钮，右下角为中文语音输入与发送按钮；模型流式回复期间发送按钮自动切换为停止按钮。
 - **中文语音兼容**：语音输入优先使用系统识别弹窗；无弹窗或启动受限时，申请录音权限并回退到 `SpeechRecognizer` 服务。识别文本追加到当前输入末尾（最多 6000 字符），不自动发送；后台听写支持取消，离开页面或超时会释放麦克风。朗读依次尝试多个中文 Locale，初始化失败、超时或提交朗读失败时重新绑定引擎并重试一次。手机仍需安装并启用中文语音引擎，MIUI 可在系统「文字转语音输出」中选择小爱语音引擎。
 - **模型动态推荐回复（`<suggested_replies>`）**：输入区上方展示由模型根据当前对话动态生成的最多 3 条简短后续回复建议（流式边界过滤器 `ReplySuggestions` 自动剥离元数据标签，确保标签绝不泄露到可见正文中）。点击建议仅填入输入框，由用户核对后手动发送。
-- **助手偏好持久化**：在「设置 → 助手偏好」中按「登录账号 + 家庭」持久化保存当前对话的「计划对象」与「手机直接连接模型」开关。切换计划对象、家庭或连接方式会自动开启新会话，防止跨家庭或跨成员混用草稿。
+- **助手偏好持久化**：在「设置 → 助手偏好」中按「登录账号 + 家庭」持久化保存当前对话的「计划对象」与「手机运行 AI 循环」开关。切换计划对象、家庭或连接方式会自动开启新会话，防止跨家庭或跨成员混用草稿。
 
 ### 2. 多角度拍照组件与本机图片预处理
 - **三处入口共用**：首页「扫码查药 / 入库 → 拍照查药 / 入库（多角度）」、AI 助手输入栏左下角拍照按钮，以及入库向导第二步 / 管理员「修改药盒资料」中的「拍照识别有效期 / 批号」共用同一套多图选择弹窗。
@@ -162,7 +168,7 @@ android-v2/app/src/
 - **扫码追溯码精确优先**：同画面出现商品条码与 20 位追溯码时优先采用追溯码；若同画面出现多个不同药盒的追溯码则拒绝自动任选。扫描已入库追溯码时，直接定位具体药盒及所属药品（即使该药品尚未建立条码前缀映射，或药盒处于已用完/已报废状态），展示该盒详情并禁用重复入库。
 
 ### 4. 统一 AI Agent Loop 与待确认双草稿卡片
-- **统一多轮工具循环**：在 `AiRuntime.kt` 中以统一循环处理模型推理与工具调用。查询家庭药品/成员/计划的工具（`find_medicines`、`list_medicines`、`get_member_plans`、`request_plan_details`、`add_plan_draft`、`propose_plan_update`、`propose_plan_pause`）回调服务端 `/api/app/ai/tool` 执行（每轮最多 5 次）；手机端本地公开检索（`search_web`）、网页正文抓取（`fetch_page`）与药品入库草稿生成（`propose_medicine_draft`）使用独立配额计数。
+- **统一多轮工具循环**：在 `AiAgent.kt` 中以统一循环处理模型推理与工具调用。查询家庭药品/成员/计划的工具（`find_medicines`、`list_medicines`、`get_member_plans`、`request_plan_details`、`add_plan_draft`、`propose_plan_update`、`propose_plan_pause`）回调服务端 `/api/app/ai/tool` 执行（每轮最多 5 次）；手机端本地公开检索（`search_web`）、网页正文抓取（`fetch_page`）与药品入库草稿生成（`propose_medicine_draft`）使用独立配额计数。
 - **草稿强制人工确认**：
   - **药品草稿卡片**：展示识别出的药名、规格、厂家、每盒数量、有效期、批号与条码，点击「打开核对并入库」才进入入库向导。仅当本地药品库存在唯一匹配的「药名 + 规格 + 厂家」（或已入库追溯码精确命中）时才自动关联已有药品；否则引导用户先核对新建药品资料，再核对药盒批次入库。
   - **计划草稿卡片**：展示新增、修改或暂停服药计划的完整参数，点击「打开核对并保存」进入计划确认弹窗（可选择优先药盒）。**AI 从不直接写库**。
@@ -189,20 +195,21 @@ android-v2/app/src/
 - **会话与防截屏安全**：
   - 会话 Cookie 保存在应用私有 `SharedPreferences` 中，不使用系统 WebView `CookieManager`。所有写请求自动注入同源 `Origin`，家庭请求注入 `X-Group-Id`。
   - `AndroidManifest.xml` 禁用系统自动备份（`allowBackup="false"`），并在管理员绑定、恢复码展示、TOTP 二维码与 AI 密钥配置等敏感状态开启窗口 `FLAG_SECURE` 阻止截屏与录屏。
-- **Android Keystore 临时凭据解封与 SSRF 防护**：
-  - 手机直连 AI 时，客户端在 Android Keystore 中生成不可导出的 `RSA-2048` 密钥对，将公钥上传至 `POST /api/app/ai/session`，接收服务端使用 `RSA-OAEP-SHA1` + `AES-256-GCM` 封装的 15 分钟临时会话凭据。
-  - `KeyPolicy` 仅在请求目标 URL 严格位于服务端下发的 LLM 或 Tavily HTTPS 根路径之下时，才将 `Bearer hm-key:<sessionId>:llm|tavily` 占位符替换为真实密钥，且带凭据请求一律禁止跟随 HTTP 重定向。
-  - `UrlPolicy` 在抓取公开药品网页前校验 HTTPS/HTTP 协议、标准端口、无内嵌凭据，并对域名解析出的**所有 DNS IP 地址**执行公网地址检查（拦截回环、私网、链路本地、CGNAT `100.64.0.0/10`、文档测试网段及 IPv6 唯一本地地址）。
+- **Worker 代理与无密钥网页抓取**：
+  - 手机通过 `/api/app/ai/session` 申请无公钥会话，模型与 Tavily 请求通过 `/api/app/ai/provider` 转发。模型与搜索密钥只由 Worker 持有，客户端不生成设备 RSA 密钥、不解封提供商凭据。
+  - 服务器绑定用户/家庭、会话期限与次数，强制路径白名单、模型及 token 上限。手机保留 agent 循环、SSE 解析、6 张照片识别、只读远程工具与本地草稿。
+  - `NativeHttp` 只抓取无密钥的公开网页，使用 `Proxy.NO_PROXY`、逐跳公网 URL/DNS 检查与响应体上限，避免系统代理绕过目标 DNS 检查。
+  - TOTP 剪贴板标记为敏感，60 秒后仅清除本次复制的内容；`otpauth` 通过系统选择器打开。语音弹窗使用隐式 Intent，识别服务仅选择系统配置或默认实现。所有动态 API ID 路径段先校验 `^[A-Za-z0-9_-]{1,100}$` 再编码。
 
 ---
 
 ## 测试范围与真机验收清单
 
 ### 自动化单元测试（`app/src/test/`）
-执行 `.\gradlew.bat testDebugUnitTest lintDebug` 运行全部 28 个测试类：
-- **领域与日程规则**：`PlannerTest`（周日=0、间隔天、夏令时 DST、RRULE、48 小时闹钟与 30 分钟家属延迟）、`TodayTodosTest`（60 分钟逾期阈值、已记录项在计划暂停后保留、撤销后恢复待服）、`MedicineExpiryTest`（年月精度、闰年月末、中文/全角日期与非法日期拒绝）、`BarcodeAndBoxTest`（GTIN 校验位、GS1 应用标识符、20 位追溯码、优先药盒不静默回退、`<think>` 思考标签流式过滤）、`MedicineCodeResolutionTest`（已入库追溯码优先匹配具体药盒、同画面多码优先级）、`ReplySuggestionsTest`（`<suggested_replies>` 任意分块边界过滤与长度/条数校验）。
-- **网络、安全与状态同步**：`PolicyTest`（SSRF 地址分类、KeyPolicy 路径前缀隔离、WebCrypto RSA-OAEP+AES-GCM 密文解封与防篡改）、`ApiClientTest`（多模态识药循环、特写日期识别、双草稿生成、搜索会话复用与取消清理）、`AppRepositoryTest` 与 `AppSnapshotTest`（`bootstrap` / `sync` / `X-HomeMeds-State` 单次请求验证、404 降级、跨家庭快照拒绝）。
-- **Robolectric 与 Compose UI 测试**：`PhotoEncoderTest`（4096×2048 噪点大图压缩至 ≤1280px 且 ≤400KiB、8 种 EXIF 方向像素级验证与元数据剥离、6 图批次内存上限）、`CalendarSyncTest`（旧「家药箱」本地日历清理与非本地日历保护）、`MedicinePhotoUiTest`、`PackageExpiryUiTest`、`SystemCameraUiTest`、`IntakeDraftTest`、`ChatUiTest`、`ThemeTest`，以及 `CompactLayoutUiTest`（360×640dp 下待办主按钮与「⋮」同行、设置菜单与权限子页无需滚动、各设置子页可进入并返回、药盒与计划操作经菜单可达）。
+执行 `.\gradlew.bat testDebugUnitTest lintDebug` 运行全部 29 个测试类：
+- **领域与日程规则**：`PlannerTest`（周日=0、间隔天、夏令时 DST、RRULE、48 小时闹钟与 30 分钟家属延迟）、`TodayTodosTest`（60 分钟逾期阈值、已记录项在计划暂停后保留、撤销后恢复待服）、`MedicineExpiryTest`（年月精度、闰年月末、中文/全角日期与非法日期拒绝）、`BarcodeAndBoxTest`（GTIN 校验位、GS1 应用标识符、20 位追溯码、优先药盒不静默回退、`<think>` 思考标签流式过滤）、`MedicineCodeResolutionTest`（已入库追溯码优先匹配具体药盒、同画面多码优先级）、`ReplySuggestionsTest`（`<suggested_replies>` 任意分块边界过滤与长度/条数校验）、`BoxFiltersTest`（药盒按状态/药箱/药品/有效期/开封筛选、各排序方式、无有效期排最后、保存值校验与跨家庭清理）。
+- **网络、安全与状态同步**：`PolicyTest`（SSRF 地址分类与动态 ID 路径段校验）、`ApiClientTest`（多模态识药循环、特写日期识别、双草稿生成、搜索会话复用与取消清理）、`AppRepositoryTest` 与 `AppSnapshotTest`（`bootstrap` / `sync` / `X-HomeMeds-State` 单次请求验证、404 降级、跨家庭快照拒绝）。
+- **Robolectric 与 Compose UI 测试**：`PhotoEncoderTest`（4096×2048 噪点大图压缩至 ≤1280px 且 ≤400KiB、8 种 EXIF 方向像素级验证与元数据剥离、6 图批次内存上限）、`CalendarSyncTest`（旧「家药箱」本地日历清理与非本地日历保护）、`MedicinePhotoUiTest`、`PackageExpiryUiTest`、`SystemCameraUiTest`、`IntakeDraftTest`、`ChatUiTest`、`ThemeTest`，以及 `CompactLayoutUiTest`（360×640dp 下待办主按钮与「⋮」同行、设置菜单与权限子页无需滚动、各设置子页可进入并返回、药盒与计划操作经菜单可达）、`InventoryFilterUiTest`（药盒有效期排序切换、药箱与过期筛选、筛选条件本机保存与按药箱分组标题）。
 - **语音兼容与生命周期**：`SpeechTest` 覆盖中文 Locale 探测、TTS 初始化失败/超时/断连重试、引擎恢复及听写结果/权限错误/超时/取消后的资源释放；`SpeechInputUiTest` 覆盖 Android 10/15 的弹窗优先与服务回退、录音权限、听写期间继续编辑后的追加、重复点击与清空会话后的取消，`ChatUiTest` 验证追加上限和不自动发送。
 
 ### 真机必测验收项
@@ -232,7 +239,9 @@ versionCode = MAJOR * 10000 + MINOR * 100 + PATCH
 
 | 版本 (`versionName` / `versionCode`) | 主要变更内容 |
 | :--- | :--- |
-| **`2.6.0` / `20600`**（当前版本） | 紧凑布局：顶栏合并为一行（标题、管理员家庭切换下拉、朗读与刷新图标），各页固定控件在约 360×640dp 手机上无需滚动即可显示，只有待办、药盒、计划与日志等列表滚动；按钮能并排时并排，次要操作移入「⋮」菜单、对话框或子页面，菜单项沿用原按钮文字。设置页改为菜单 + 子页面（助手偏好、日历与提醒、权限与后台、账号与安全，管理员另有家庭管理、AI 配置、使用日志）。两步服药核对、过期药二次确认与「已核对实物」勾选等安全确认及全部业务逻辑、服务端 API 与本地数据格式均不变，按向后兼容的界面改进使用 MINOR 递增。 |
+| **`2.8.0` / `20800`** | 新增药盒按药箱、药品、状态、有效期和开封状态组合筛选，提供有效期、余量、药名、最近入库排序与药箱分组，按家庭保存本机偏好。保留现有服务端 API 与库存操作，按兼容新增功能使用 MINOR 递增。 |
+| **`2.7.0` / `20700`** | 安全升级：模型与 Tavily 密钥仅由 Worker 注入，手机经限时限次代理访问；清理旧设备密钥封装与退役网页日常功能，精简正式 APK，收紧缓存与推送边界。 |
+| **`2.6.0` / `20600`** | 紧凑布局：顶栏合并为一行（标题、管理员家庭切换下拉、朗读与刷新图标），各页固定控件在约 360×640dp 手机上无需滚动即可显示，只有待办、药盒、计划与日志等列表滚动；按钮能并排时并排，次要操作移入「⋮」菜单、对话框或子页面，菜单项沿用原按钮文字。设置页改为菜单 + 子页面（助手偏好、日历与提醒、权限与后台、账号与安全，管理员另有家庭管理、AI 配置、使用日志）。两步服药核对、过期药二次确认与「已核对实物」勾选等安全确认及全部业务逻辑、服务端 API 与本地数据格式均不变，按向后兼容的界面改进使用 MINOR 递增。 |
 | **`2.5.1` / `20501`** | 修复手机端中文朗读初始化失败、超时或断连后的重连重试，兼容多种中文 Locale；语音输入保留系统弹窗优先，并在弹窗缺失或启动受限时申请录音权限、回退到 `SpeechRecognizer` 服务。识别结果追加到当前输入末尾（最多 6000 字符），保留听写期间继续键入的内容；取消、超时或离开页面会释放麦克风。恢复既有语音能力，不改变服务端 API 或本地数据格式，按向后兼容缺陷修复使用 PATCH 递增。 |
 | **`2.5.0` / `20500`** | 新增先输入分组码再填写成员资料的注册流程，支持扫描管理台本地生成的分组码二维码；扫码只填值、不自动注册或更改服务器。服务端在创建账号时原子校验当前分组码，更换码后旧二维码失效。保留注册 API 和已有账号兼容性，按向后兼容新增功能使用 MINOR 递增；网站、API 与模型地址继续使用脱敏占位配置。 |
 | **`2.4.0` / `20400`** | 新增入库与药盒编辑页「拍照识别有效期 / 批号」特写识别，有效期支持仅到月份（`YYYY-MM`，确认保存时按当月实际月末日记录）；扫码优先提取 20 位追溯码并直接定位已入库具体药盒；冷启动、数据保存与后台提醒同步切换至 `/api/app/bootstrap`、`/api/app/sync` 与 `X-HomeMeds-State: app` 写后快照复用，大幅减少重复网络请求并保留旧服务端兼容回退。 |
@@ -240,3 +249,15 @@ versionCode = MAJOR * 10000 + MINOR * 100 + PATCH
 | **`2.2.0` / `20200`** | 新增同一药盒最多 6 张多角度照片合并识药、系统相册多选，以及首页「扫码查药 / 入库」直接分流「拍照查药 / 入库（多角度）」。 |
 | **`2.1.0` / `20100`** | 新增统一 AI Agent Loop、单图拍照识药与待确认药品入库草稿；客户端正式更名为「**赛博药箱**」，本地日历账号迁移为「赛博药箱」并自动清理旧版「家药箱」本地账号。 |
 | **`2.0.0` / `20000`** | 首个独立 Jetpack Compose 原生客户端版本，实现完整原生界面、本地 ML Kit/ZXing 扫码、Keystore AI 直连、本地日历与 48 小时精确闹钟提醒。 |
+
+## 2.7.0 安全升级与运维要求
+
+提供商长期密钥只在 Worker 中解密、注入，不再下发给 Android。手机保留 agent 循环、多图识别、网页读取和本地草稿工具，通过 `POST /api/app/ai/provider` 代理模型与 Tavily 请求。会话绑定当前用户及家庭，有效期 15 分钟；每会话模型最多 12 次、搜索最多 5 次，路径白名单、模型、输出 token 上限、超时及禁止跟随重定向均由 Worker 强制执行。聊天中的公开检索单独申请 lookup 会话，不能借聊天会话绕过检索配额。只有代理路由使用 4 MiB 请求体上限，其余 API 保持 256 KiB。
+
+旧版 APK 携带 `public_key` 申请会话时收到 `501`，文字查药/对话自动回退到 Worker `/ai/lookup`、`/ai/chat`；旧版照片识别不再可用，需升级到 2.7.0。新版不上传设备公钥，也不接收加密凭据。
+
+迁移 `0008_security_fixes.sql` 增加代理调用计数、Push 重试次数及订阅失败计数，并清空来源不可信的共享药品缓存。只有管理员保存的 confirmed 药品可写共享缓存，读写均仅保留 `name, generic_name, manufacturer, specification, indications, precautions, base_unit, units_per_package, sources`，不含追溯码、状态、批号或有效期。
+
+Push 订阅每用户每小时限 10 次，最多保留最新 5 个。首次发送失败后最多重试 3 次，间隔 5/10/20 分钟；订阅成功后失败计数清零，连续失败 10 次删除，404/410 立即清理。每轮 Cron 全局最多 150 条、每家庭最多 30 条，并发 6、单次超时 5 秒；未领取任务留待下一轮。
+
+**部署后必须在管理台轮换 LLM 和 Tavily 密钥，并在提供商侧撤销旧密钥。历史下发的长期密钥应视为已泄露，15 分钟会话期限从未使其失效。** 轮换提供商密钥，不要替换 `APP_ENC_KEY`。先应用迁移再发布新 Worker，迁移到发布之间旧 Worker 仍可能重新写入共享缓存，应缩短窗口并在切换后确认清理。这里仅说明发布要求，本次修复不执行部署、远程迁移或密钥轮换。

@@ -73,7 +73,7 @@ private fun formatSync(millis: Long?) = millis?.let {
     val admin = state.user?.admin == true
     val target = state.members.find { it.id == assistantTarget(state) }?.username ?: "未选择"
     val subtitles = mapOf(
-        "assistant" to "计划对象：$target · ${if (state.assistantPhone) "手机直连" else "服务端连接"}",
+        "assistant" to "计划对象：$target · ${if (state.assistantPhone) "手机运行（Worker 代理）" else "服务端连接"}",
         "calendar" to "上次同步 ${formatSync(vm.prefs.lastSync) ?: "尚未同步"} · 日历 ${vm.prefs.events} 条",
         "permissions" to "日历、通知、精确闹钟与电池优化",
         "account" to "${state.user?.username.orEmpty()} · ${if (admin) "管理员" else "家庭成员"}",
@@ -96,8 +96,8 @@ private fun formatSync(millis: Long?) = millis?.let {
         Picker("计划对象", assistantTarget(state), state.members.map { it.id to it.username }, target,
             enabled = !state.busy && state.members.isNotEmpty())
         if (state.members.isEmpty()) Text("请先选择家庭并添加成员。", color = Muted)
-        Check("手机直接连接模型（设备加密凭据）", state.assistantPhone, phone, enabled = !state.busy)
-        Text("关闭后纯文字对话使用服务端连接；带图片时仍需手机直连支持视觉的模型。", color = Muted, style = MaterialTheme.typography.bodySmall)
+        Check("手机运行 AI 循环（Worker 代理）", state.assistantPhone, phone, enabled = !state.busy)
+        Text("关闭后纯文字对话使用服务端连接；带图片时仍由手机运行循环，经 Worker 代理调用支持视觉的模型。", color = Muted, style = MaterialTheme.typography.bodySmall)
     }
 }
 
@@ -300,26 +300,26 @@ private fun formatSync(millis: Long?) = millis?.let {
             val body = json("name" to form.getString("name"), "timezone" to form.getString("timezone"),
                 "meal_times" to json("morning" to form.getString("morning"), "noon" to form.getString("noon"),
                     "evening" to form.getString("evening"), "bedtime" to form.getString("bedtime")))
-            vm.save(if (groupId == null) "POST" else "PUT", "/groups" + (groupId?.let { "/$it" } ?: ""), body) { groupEditor = null }
+            vm.save(if (groupId == null) "POST" else "PUT", "/groups" + (groupId?.let { "/${pathSegment(it)}" } ?: ""), body) { groupEditor = null }
         }
     }
     warehouse?.let { EditForm("药箱名称", listOf(FormField("name", "名称")), it, state.busy, { warehouse = null }) { body ->
-        vm.save(if (warehouseId == null) "POST" else "PUT", "/warehouses" + (warehouseId?.let { "/$it" } ?: ""), body) { warehouse = null }
+        vm.save(if (warehouseId == null) "POST" else "PUT", "/warehouses" + (warehouseId?.let { "/${pathSegment(it)}" } ?: ""), body) { warehouse = null }
     } }
     member?.let { u -> EditForm("修改 ${u.username}", listOf(FormField("is_elderly", "老人模式", "bool"),
         FormField("group_id", "所属家庭（已有计划时不能跨家庭）", "choice", listOf("" to "不分组") + state.groups.map { it.id to it.name })),
         json("is_elderly" to u.elderly, "group_id" to u.groupId), state.busy, { member = null }) { body ->
         if (body.optString("group_id").isBlank()) body.put("group_id", JSONObject.NULL)
-        vm.save("PATCH", "/members/${u.id}", body) { member = null }
+        vm.save("PATCH", "/members/${pathSegment(u.id)}", body) { member = null }
     } }
     removeWarehouse?.let { w -> Confirm("删除空药箱", "删除 ${w.getString("name")}？有过库存记录的药箱不能删除，请改名。", { removeWarehouse = null }) {
-        vm.save("DELETE", "/warehouses/${w.getString("id")}") { removeWarehouse = null }
+        vm.save("DELETE", "/warehouses/${pathSegment(w.getString("id"))}") { removeWarehouse = null }
     } }
     rotate?.let { g -> Confirm("更换家庭分组码", "${g.name} 的旧分组码将立即失效。", { rotate = null }) {
-        vm.save("POST", "/groups/${g.id}/rotate-code") { rotate = null; vm.notice("已生成新分组码，请在家庭管理中查看") }
+        vm.save("POST", "/groups/${pathSegment(g.id)}/rotate-code") { rotate = null; vm.notice("已生成新分组码，请在家庭管理中查看") }
     } }
     reset?.let { u -> Confirm("重置管理员", "重置 ${u.username} 的所有登录凭据？仅显示一次临时密码。", { reset = null }) {
-        vm.perform { temporary = vm.post("/admin/users/${u.id}/reset").getString("temporary_password"); reset = null }
+        vm.perform { temporary = vm.post("/admin/users/${pathSegment(u.id)}/reset").getString("temporary_password"); reset = null }
     } }
     temporary?.let { secret -> Modal("一次性密码（7 天有效）", { temporary = null }) {
         Text("请安全地交给目标管理员，首次登录后必须重新绑定验证器。")

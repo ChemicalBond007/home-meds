@@ -4,44 +4,39 @@ import type { PublicKeyCredentialRequestOptionsJSON, PublicKeyCredentialCreation
 import { api } from './api';
 import { Message, errorText, Icon, useLoad } from './components';
 import { TotpSetup } from './TotpSetup';
-import { isApp } from './native';
 import type { AdminPasskeys, SecurityStatus } from '../shared/bootstrap';
 import { PasskeyManagement } from './PasskeyManagement';
-export function Login({ done, adminOnly = false }: { done: () => void; adminOnly?: boolean }) {
-  const [mode, setMode] = useState<'login' | 'register' | 'admin'>(adminOnly ? 'admin' : 'login');
-  const [name, setName] = useState(''), [secret, setSecret] = useState(''), [code, setCode] = useState(''), [join, setJoin] = useState('');
-  const [elderly, setElderly] = useState(false), [error, setError] = useState(''), [busy, setBusy] = useState(false);
+export function Login({ done }: { done: () => void }) {
+  const [name, setName] = useState(''), [secret, setSecret] = useState(''), [code, setCode] = useState('');
+  const [error, setError] = useState(''), [busy, setBusy] = useState(false);
   const submit = async () => {
     setBusy(true); setError('');
     try {
-      await api(adminOnly ? '/auth/admin/login' : mode === 'register' ? '/auth/register' : '/auth/login', 'POST', {
-        username: name, ...(mode === 'register' ? { join_code: join, is_elderly: elderly } : { secret: secret || undefined, code: code || undefined }),
+      await api('/auth/admin/login', 'POST', {
+        username: name, secret: secret || undefined, code: code || undefined,
       });
       done();
     } catch (e) { setError(errorText(e)); } finally { setBusy(false); }
   };
   return <main className="login">
     <section className="login-intro"><div className="brand"><img src="/icon.svg" alt="" />赛博药箱</div>
-      <p className="eyebrow">{adminOnly ? 'ADMINISTRATION CONSOLE' : 'HOME MEDICINE, TOGETHER'}</p><h1>{adminOnly ? <>配置有序，<br />照顾有据。</> : <>药放得安心，<br />家人也放心。</>}</h1>
-      <p>{adminOnly ? <>管理员设置专用。<br />日常用药请使用手机应用。</> : <>一起整理家里的药，<br />记住每一次服药。</>}</p><div className="login-art"><Icon name="settings" /><span>{adminOnly ? '安全 · 家庭 · 模型' : '一份清单，一家人的照顾'}</span></div>
+      <p className="eyebrow">ADMINISTRATION CONSOLE</p><h1>配置有序，<br />照顾有据。</h1>
+      <p>管理员设置专用。<br />日常用药请使用手机应用。</p><div className="login-art"><Icon name="settings" /><span>安全 · 家庭 · 模型</span></div>
     </section>
-    <section className="login-form"><h2>{adminOnly ? '管理员登录' : mode === 'register' ? '加入你的家庭' : '欢迎回家'}</h2>
-      <p className="muted">{mode === 'admin' ? isApp() ? '使用验证器或一次性凭证。手机应用不含管理功能，管理请使用网页版。' : '使用通行密钥、验证器或一次性凭证。' : '普通成员只需用户名登录，请勿在公共设备使用。'}</p>
-      {!adminOnly && <div className="segmented">{(['login', 'register', 'admin'] as const).map(m => <button type="button" className={mode === m ? 'active' : ''} key={m} onClick={() => { setMode(m); setError(''); }}>{m === 'login' ? '成员登录' : m === 'register' ? '注册' : '管理员'}</button>)}</div>}
+    <section className="login-form"><h2>管理员登录</h2>
+      <p className="muted">使用通行密钥、验证器或一次性凭证。</p>
       <form onSubmit={e => { e.preventDefault(); void submit(); }}>
         <label>用户名<input value={name} onChange={e => setName(e.target.value)} autoComplete="username" minLength={2} maxLength={40} required /></label>
-        {mode === 'register' && <><label>分组码<input value={join} onChange={e => setJoin(e.target.value)} required autoComplete="off" /></label>
-          <label className="check"><input type="checkbox" checked={elderly} onChange={e => setElderly(e.target.checked)} />我是老人，使用大字简洁界面</label></>}
-        {mode === 'admin' && <><label>验证器 6 位验证码<input value={code} onChange={e => setCode(e.target.value)} inputMode="numeric" autoComplete="one-time-code" maxLength={6} /></label>
-          <details><summary>使用临时密码或恢复码</summary><label>一次性凭证<input type="password" value={secret} onChange={e => setSecret(e.target.value)} autoComplete="current-password" /></label></details></>}
+        <label>验证器 6 位验证码<input value={code} onChange={e => setCode(e.target.value)} inputMode="numeric" autoComplete="one-time-code" maxLength={6} /></label>
+        <details><summary>使用临时密码或恢复码</summary><label>一次性凭证<input type="password" value={secret} onChange={e => setSecret(e.target.value)} autoComplete="current-password" /></label></details>
         {error && <Message warning>{error}</Message>}
-        <button className="full" disabled={busy} type="submit">{busy ? '正在登录…' : adminOnly ? '进入管理台' : mode === 'register' ? '确认注册并加入家庭' : '进入家药箱'}</button>
-        {mode === 'admin' && !isApp() && <button disabled={busy || !name} className="secondary full" type="button" onClick={() => {
+        <button className="full" disabled={busy} type="submit">{busy ? '正在登录…' : '进入管理台'}</button>
+        <button disabled={busy || !name} className="secondary full" type="button" onClick={() => {
           setBusy(true); setError('');
           api<{ id: string; options: PublicKeyCredentialRequestOptionsJSON }>('/auth/passkey/options', 'POST', { username: name })
             .then(async d => api('/auth/passkey/login', 'POST', { id: d.id, response: await startAuthentication({ optionsJSON: d.options }) }))
             .then(done).catch(e => setError(errorText(e))).finally(() => setBusy(false));
-        }}>使用通行密钥登录</button>}
+        }}>使用通行密钥登录</button>
       </form><p className="fine">仅帮助记录和管理，不代替医生或药师的建议。</p>
     </section>
   </main>;

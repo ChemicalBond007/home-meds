@@ -37,7 +37,7 @@ export function App() {
     } catch (e) { setError(errorText(e)); } finally { setBusy(false); }
   };
   if (loading) return <main className="loading"><img src="/icon.svg" alt="" /><h1>赛博药箱管理台</h1><p role="status">正在验证管理员身份…</p></main>;
-  if (status === 401) return <Login adminOnly done={() => void load()} />;
+  if (status === 401) return <Login done={() => void load()} />;
   if (!data || data.user.role !== 'admin') return <main className="binding-page"><div className="brand"><img src="/icon.svg" alt="" />赛博药箱</div>
     <section className="panel"><h1>{status === 403 ? '此入口仅供管理员使用' : '管理台暂时无法打开'}</h1>
       <p>{status === 403 ? '普通家庭成员请使用手机应用。网页版仅提供管理员设置。' : error || '请检查网络后重试。'}</p>

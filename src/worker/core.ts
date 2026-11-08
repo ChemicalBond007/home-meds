@@ -13,7 +13,7 @@ export type AppEnv = {
   };
 };
 export type Ctx = Context<AppEnv>;
-export function fail(status: 400 | 401 | 403 | 404 | 409 | 429 | 503, message: string): never {
+export function fail(status: 400 | 401 | 403 | 404 | 409 | 429 | 501 | 503, message: string): never {
   throw new HTTPException(status, { message });
 }
 export async function json<T extends z.ZodType>(c: Ctx, schema: T): Promise<z.output<T>> {

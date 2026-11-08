@@ -1,7 +1,5 @@
 package com.homemeds.app
 
-import okhttp3.HttpUrl.Companion.toHttpUrl
-import org.json.JSONObject
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
@@ -9,10 +7,6 @@ import org.junit.Assert.assertThrows
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import java.net.InetAddress
-import java.security.GeneralSecurityException
-import java.security.KeyFactory
-import java.security.spec.PKCS8EncodedKeySpec
-import java.util.Base64
 
 class UrlPolicyTest {
     @Test
@@ -42,63 +36,17 @@ class UrlPolicyTest {
     }
 }
 
-class KeyPolicyTest {
-    private val session = AiSession(
-        "s-1", Long.MAX_VALUE, "sk-llm", "https://api.example.com/v1".toHttpUrl(), "tv-key", "https://api.tavily.com".toHttpUrl(),
-    )
-
-    @Test
-    fun injectsKeysOnlyUnderConfiguredBase() {
-        assertEquals("Bearer sk-llm", KeyPolicy.resolve("Bearer hm-key:s-1:llm", "https://api.example.com/v1/chat/completions".toHttpUrl(), session))
-        assertEquals("Bearer tv-key", KeyPolicy.resolve("Bearer hm-key:s-1:tavily", "https://api.tavily.com/search".toHttpUrl(), session))
-        for (url in listOf("https://api.example.com/v2/chat", "https://api.example.com/v1x", "https://evil.example/v1/chat", "http://api.example.com/v1/chat")) {
-            assertThrows(url, UserError::class.java) { KeyPolicy.resolve("Bearer hm-key:s-1:llm", url.toHttpUrl(), session) }
+class PathSegmentTest {
+    @Test fun publicPagesExplicitlyDisableSystemProxies() {
+        val http = com.homemeds.app.net.NativeHttp(10)
+        val client = http.javaClass.getDeclaredField("client").apply { isAccessible = true }.get(http) as okhttp3.OkHttpClient
+        assertEquals(java.net.Proxy.NO_PROXY, client.proxy)
+    }
+    @Test fun acceptsOnlyBoundedOpaqueIds() {
+        for (id in listOf("plan_1-A", "a".repeat(100))) assertEquals(id, pathSegment(id))
+        for (id in listOf(null, "", "a".repeat(101), "..", "../groups/x", "a/b", "a?b", "a#b", "%2F", "中文", "a b", "a\\\\b", "a\n")) {
+            assertThrows(UserError::class.java) { pathSegment(id) }
         }
-        assertThrows(UserError::class.java) { KeyPolicy.resolve("Bearer hm-key:s-1:tavily", "https://api.example.com/v1/chat".toHttpUrl(), session) }
-    }
-
-    @Test
-    fun rejectsForeignOrMalformedReferences() {
-        val url = "https://api.example.com/v1/chat".toHttpUrl()
-        assertThrows(UserError::class.java) { KeyPolicy.resolve("Bearer hm-key:other:llm", url, session) }
-        assertThrows(UserError::class.java) { KeyPolicy.resolve("Bearer hm-key:s-1:admin", url, session) }
-        assertThrows(UserError::class.java) {
-            KeyPolicy.resolve("Bearer hm-key:s-1:tavily", "https://api.tavily.com/search".toHttpUrl(), session.copy(tavilyKey = null))
-        }
-    }
-
-    @Test
-    fun rootBaseAllowsAnyPathOnThatHost() {
-        val root = session.copy(llmBase = "https://api.deepseek.com".toHttpUrl())
-        assertTrue(KeyPolicy.within("https://api.deepseek.com/chat/completions".toHttpUrl(), root.llmBase))
-        assertFalse(KeyPolicy.within("https://deepseek.com/chat/completions".toHttpUrl(), root.llmBase))
-    }
-}
-
-class SealedTest {
-    private val fixture = JSONObject(javaClass.classLoader!!.getResource("sealed-fixture.json")!!.readText())
-    private val key = KeyFactory.getInstance("RSA").generatePrivate(PKCS8EncodedKeySpec(Base64.getDecoder().decode(fixture.getString("pkcs8"))))
-
-    @Test
-    fun opensCredentialsSealedByWorkerWebCrypto() {
-        val payload = JSONObject(Sealed.open(key, fixture.getJSONObject("sealed")))
-        val expected = fixture.getJSONObject("payload")
-        assertEquals(expected.getString("llm_key"), payload.getString("llm_key"))
-        val session = AiSession.parse(expected.getString("session_id"), payload)
-        assertEquals("api.example.com", session.llmBase.host)
-        assertNull(session.tavilyKey)
-        assertEquals(expected.getLong("expires_at"), session.expiresAt)
-        assertThrows(UserError::class.java) { AiSession.parse("another-session", payload) }
-    }
-
-    @Test
-    fun rejectsTamperedCiphertext() {
-        val sealed = JSONObject(fixture.getJSONObject("sealed").toString())
-        val bytes = Base64.getDecoder().decode(sealed.getString("ciphertext"))
-        bytes[0] = (bytes[0].toInt() xor 1).toByte()
-        sealed.put("ciphertext", Base64.getEncoder().encodeToString(bytes))
-        assertThrows(GeneralSecurityException::class.java) { Sealed.open(key, sealed) }
-        assertThrows(UserError::class.java) { Sealed.open(key, JSONObject(sealed.toString()).put("alg", "other")) }
     }
 }
 

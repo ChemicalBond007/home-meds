@@ -22,7 +22,7 @@ describe('settings-only administrator interface', () => {
     for (const text of ['>使用日志<', '>今日服药<', '>药品入库<', '>对话助手<']) expect(html).not.toContain(text);
   });
   it('renders administrator-only login without member registration controls', () => {
-    const html = renderToStaticMarkup(<Login adminOnly done={() => {}} />);
+    const html = renderToStaticMarkup(<Login done={() => {}} />);
     expect(html).toContain('管理员登录');
     expect(html).toContain('使用通行密钥登录');
     expect(html).not.toContain('成员登录');

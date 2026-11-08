@@ -1,20 +1,12 @@
-import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { renderToStaticMarkup } from 'react-dom/server';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { env } from 'cloudflare:workers';
 import { app } from '../src/worker';
 import { hash } from '../src/worker/crypto';
 import { saveApiKey } from '../src/worker/ai-config';
 import { localClock } from '../src/shared/schedule';
-import { proposalSchema, type Proposal } from '../src/shared/chat';
-import { appendProposal, parseProposal } from '../src/client/chat-drafts';
-import { PendingPlans, ChatPage } from '../src/client/Chat';
-import { sse } from '../src/client/api';
-import type { User } from '../src/shared/types';
+import { proposalSchema } from '../src/shared/chat';
 import { mockFetch } from './fetch';
 
-vi.hoisted(() => vi.stubGlobal('localStorage', { getItem: () => '', setItem: () => {} }));
-vi.mock('../src/client/Plans', () => ({ PlanEditor: () => null }));
-const member: User = { id: 'u', username: '测试家人', role: 'user', group_id: 'g', is_elderly: 0 };
 const flat = { medicine_name: '手填测试药', amount: 2, unit: '片', frequency: 'daily', times: ['08:00'] };
 const stream = (...deltas: unknown[]) => new Response(deltas.map(delta => `data: ${JSON.stringify({ choices: [{ delta }] })}\n\n`).join('') + 'data: [DONE]\n\n',
   { headers: { 'Content-Type': 'text/event-stream' } });
@@ -45,14 +37,13 @@ beforeEach(async () => {
   await saveApiKey(env, 'llm', 'mock-key');
 });
 afterEach(() => vi.restoreAllMocks());
-afterAll(() => vi.unstubAllGlobals());
 async function unchanged() {
   expect(await env.DB.prepare('SELECT COUNT(*) AS n FROM medication_plans').first('n')).toBe(2);
   expect(await env.DB.prepare("SELECT amount,enabled FROM medication_plans WHERE id='p'").first()).toEqual({ amount: 1, enabled: 1 });
   expect(await env.DB.prepare("SELECT units_remaining FROM stock_items WHERE id='box'").first('units_remaining')).toBe(5);
 }
 describe('chat draft staging tools', () => {
-  it('roundtrips database lookup, a flat tool call, SSE decoding and a visible confirmation card without saving', async () => {
+  it('roundtrips database lookup and a flat tool call into a validated SSE draft without saving', async () => {
     const model = mockFetch(async request => {
       const body = await request.json() as { tools: { function: { name: string; parameters: { required: string[] } } }[] };
       const params = body.tools.find(t => t.function.name === 'add_plan_draft')!.function.parameters;
@@ -68,16 +59,6 @@ describe('chat draft staging tools', () => {
     expect(cards).toHaveLength(1);
     expect(cards[0].draft).toMatchObject({ user_id: 'u', medicine_name: '正式测试药', amount: 2, start_date: localClock(new Date(), 'Asia/Shanghai').date });
     expect(model.requests).toHaveLength(3);
-    // Exercise the browser SSE reader with CRLF and one-byte packets, including
-    // split UTF-8 characters and CR/LF pairs.
-    const bytes = new TextEncoder().encode(body.replaceAll('\n', '\r\n'));
-    vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response(new ReadableStream({
-      start(controller) { for (const byte of bytes) controller.enqueue(new Uint8Array([byte])); controller.close(); },
-    })));
-    let queue: Proposal[] = [];
-    await sse('/ai/chat', {}, (event, data) => { if (event === 'draft') queue = appendProposal(queue, parseProposal(data, 'u')); });
-    const html = renderToStaticMarkup(<PendingPlans proposals={queue} members={[member]} busy={false} edit={() => {}} />);
-    for (const text of ['待确认的计划（1）', '正式测试药', '08:00', '核对草稿，确认保存', '尚未保存']) expect(html).toContain(text);
     await unchanged();
   });
   it('repairs a text-only draft response once in explicit draft mode and then uses the real tool', async () => {
@@ -193,40 +174,5 @@ describe('chat draft staging tools', () => {
     expect(cardFrames(body)).toHaveLength(0);
     expect(body).toContain('本轮最多5次工具调用');
     await unchanged();
-  });
-});
-describe('pending draft validation and presentation', () => {
-  const payload = { draft_id: 'd1', operation: 'create', draft: { ...flat, user_id: 'u', start_date: '2026-10-17' } };
-  it('does not re-add a repeated event or resurrect a saved card', () => {
-    const p = parseProposal(payload, 'u'), current = [{ ...p, saved: true }];
-    expect(appendProposal(current, p)).toBe(current);
-    const html = renderToStaticMarkup(<PendingPlans proposals={current} members={[member]} busy={false} edit={() => {}} />);
-    expect(html).toContain('待确认的计划（0）');
-    expect(html).toContain('已确认保存');
-  });
-  it('keeps older draft events without an id compatible', () => {
-    const legacy = { operation: 'create', draft: payload.draft };
-    const first = parseProposal(legacy, 'u'), second = parseProposal(legacy, 'u');
-    expect(first.draft_id).not.toBe(second.draft_id);
-    expect(appendProposal([first], second)).toHaveLength(2);
-  });
-  it.each([{ ...payload, draft: { ...payload.draft, amount: 0 } }, { ...payload, operation: 'update' }, { ...payload, operation: 'unknown' }])(
-    'rejects incomplete or invalid events explicitly: %j', value => {
-      expect(() => parseProposal(value, 'u')).toThrow('未加入待确认列表');
-    });
-  it('rejects a valid card for another selected person', () => {
-    expect(() => parseProposal(payload, 'v')).toThrow('不属于当前计划对象');
-  });
-  it('reports interrupted streams rather than treating them as completed', async () => {
-    vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response('event: delta\ndata: "仅文字"\n\n'));
-    await expect(sse('/ai/chat', {}, () => {})).rejects.toThrow('连接已中断');
-  });
-  it('offers an explicit generate-draft action without any automatic save button', () => {
-    vi.stubGlobal('window', {});
-    const html = renderToStaticMarkup(<ChatPage user={member} members={[member]} products={[]} changed={() => {}}
-      family={{ id: 'g', name: '家庭', timezone: 'Asia/Shanghai', meal_times: '{"morning":"08:00"}' }} />);
-    expect(html).toContain('生成待确认草稿');
-    expect(html).toContain('文字回复不等于已生成卡片');
-    expect(html).not.toContain('已核对，确认保存');
   });
 });

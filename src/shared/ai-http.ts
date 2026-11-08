@@ -1,8 +1,8 @@
 import { z } from 'zod';
 import type { AISettings } from './ai';
 
-// Runtime-neutral HTTP used by the Worker (global fetch) and the Android app
-// (a native bridge that injects provider keys outside the page).
+// Injectable HTTP for server-side agents and isolated protocol tests.
+// Android has its own agent loop and sends credentialed calls through the Worker.
 export type Http = (input: string | URL, init?: RequestInit) => Promise<Response>;
 const globalHttp: Http = (input, init) => fetch(input, init);
 export function publicUrl(value: string) {

@@ -40,7 +40,13 @@ internal fun boxStatus(item: StockItem, today: String): Pair<String, androidx.co
 @Composable fun InventoryScreen(vm: AppViewModel, state: AppState) {
     var tab by remember { mutableIntStateOf(0) }
     var search by remember { mutableStateOf("") }
-    var status by remember { mutableStateOf("active") }
+    var savedFilter by remember(state.groupId) { mutableStateOf(BoxFilter.parse(state.groupId?.let(vm.prefs::boxFilter))) }
+    val filter = savedFilter.sanitize(state.warehouses.map { it.optString("id") }, state.products.map { it.id })
+    var filterDialog by remember { mutableStateOf(false) }
+    fun updateFilter(next: BoxFilter) {
+        savedFilter = next
+        state.groupId?.let { vm.prefs.setBoxFilter(it, next.toJson().toString()) }
+    }
     var intake by remember { mutableStateOf(false) }
     var product by remember { mutableStateOf<Product?>(null) }
     var detail by remember { mutableStateOf<Product?>(null) }
@@ -61,15 +67,22 @@ internal fun boxStatus(item: StockItem, today: String): Pair<String, androidx.co
             Action("药品入库", enabled = state.groupId != null && !state.busy) { intake = true }
         }
         Tabs(listOf("在库药盒", "药品资料", "库存流水"), tab) { tab = it }
-        Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            Field("搜索药名、厂家或追溯码", search, { search = it }, Modifier.weight(1f))
-            if (tab == 0) ChipPicker(status, listOf("active" to "在库", "empty" to "用尽", "discarded" to "报废", "" to "全部"), { status = it },
-                description = "状态筛选")
-        }
+        Field(if (tab == 0) "搜索药名、批号、药箱或追溯码" else "搜索药名、厂家或追溯码", search, { search = it })
+        if (tab == 0) BoxFilterBar(filter, state.warehouses, ::updateFilter) { filterDialog = true }
         when (tab) {
-            0 -> state.stock.filter { (status.isEmpty() || it.data.optString("status") == status) &&
-                (it.name.contains(search, true) || it.trace.orEmpty().contains(search)) }.forEach { item ->
-                BoxCard(item, state.today, state.user?.admin == true, state.busy, edit = { box = item }) { movement = item to it }
+            0 -> {
+                val boxes = applyBoxFilter(state.stock, filter, state.today, search)
+                Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Text(boxFilterSummary(filter, boxes.size, state.stock.size, state.warehouses, state.products), Modifier.weight(1f),
+                        color = Muted, style = MaterialTheme.typography.bodySmall)
+                    if (!filter.isDefault) TextButton({ updateFilter(BoxFilter()) }, Modifier.heightIn(min = touchHeight)) { Text("恢复默认") }
+                }
+                boxes.forEachIndexed { i, item ->
+                    if (filter.sort == "warehouse" && (i == 0 || boxes[i - 1].warehouse != item.warehouse))
+                        SectionHeader("${item.warehouse} · ${boxes.count { it.warehouse == item.warehouse }} 盒")
+                    BoxCard(item, state.today, state.user?.admin == true, state.busy, edit = { box = item }) { movement = item to it }
+                }
+                if (boxes.isEmpty()) Text(if (state.stock.isEmpty()) "药箱里还没有药盒" else "当前条件下没有药盒", color = Muted)
             }
             1 -> state.products.filter { it.data.toString().contains(search, true) }.forEach { p ->
                 Panel(p.name, onClick = { detail = p }, trailing = {
@@ -92,6 +105,7 @@ internal fun boxStatus(item: StockItem, today: String): Pair<String, androidx.co
             }
         }
     }
+    if (filterDialog) BoxFilterDialog(filter, state.warehouses, state.products, ::updateFilter) { filterDialog = false }
     if (intake) IntakeDialog(vm, state) { intake = false }
     detail?.let { p -> Modal(p.name, { detail = null }) {
         Text(listOfNotNull(p.data.nullable("specification"), p.data.nullable("manufacturer")).joinToString(" · "), color = Muted)
@@ -101,11 +115,11 @@ internal fun boxStatus(item: StockItem, today: String): Pair<String, androidx.co
         p.data.nullable("precautions")?.let { Text("注意事项：$it") }
         Sources(parseSources(p.data.opt("sources")))
         if (state.user?.admin == true) Action("编辑资料及条码映射", secondary = true, enabled = !state.busy) {
-            vm.perform { codes = vm.list("/products/${p.id}/codes").strings(); detail = null; product = p }
+            vm.perform { codes = vm.list("/products/${pathSegment(p.id)}/codes").strings(); detail = null; product = p }
         }
     } }
     product?.let { p -> ProductEditor(p.data, codes, state.busy, { product = null }) { body ->
-        vm.save("PUT", "/products/${p.id}", body) { product = null }
+        vm.save("PUT", "/products/${pathSegment(p.id)}", body) { product = null }
     } }
     box?.let { item ->
         var photoBusy by remember(item.id) { mutableStateOf(false) }
@@ -123,7 +137,7 @@ internal fun boxStatus(item: StockItem, today: String): Pair<String, androidx.co
             }
         }) { body ->
             vm.perform {
-                try { vm.mutate("PUT", "/stock/${item.id}", body); box = null }
+                try { vm.mutate("PUT", "/stock/${pathSegment(item.id)}", body); box = null }
                 catch (e: com.homemeds.app.net.ApiException) {
                     if (e.status == 409) { box = null; vm.refresh() }
                     throw e
@@ -133,14 +147,61 @@ internal fun boxStatus(item: StockItem, today: String): Pair<String, androidx.co
     }
     movement?.let { (item, type) ->
         if (type == "discard") Confirm("确认报废", "将 ${item.name} 的本药盒剩余 ${Texts.amount(item.remaining)} ${item.unit} 全部报废，不能撤销。", { movement = null }) {
-            vm.save("POST", "/stock/${item.id}/move", json("type" to "discard")) { movement = null }
+            vm.save("POST", "/stock/${pathSegment(item.id)}/move", json("type" to "discard")) { movement = null }
         } else EditForm(if (type == "out") "记录用掉" else "移动药盒",
             if (type == "out") listOf(FormField("amount", "用掉数量（${item.unit}）", "number"))
             else listOf(FormField("warehouse_id", "目标药箱", "choice", state.warehouses.filter { it.getString("id") != item.data.optString("warehouse_id") }.map { it.getString("id") to it.getString("name") })),
             json("type" to type, "amount" to 1), state.busy, { movement = null }) {
-                vm.save("POST", "/stock/${item.id}/move", it) { movement = null }
+                vm.save("POST", "/stock/${pathSegment(item.id)}/move", it) { movement = null }
             }
     }
+}
+
+private fun warehouseOptions(warehouses: List<JSONObject>) =
+    listOf("" to "全部药箱") + warehouses.map { it.getString("id") to it.getString("name") }
+
+/** Quick status / warehouse / sort chips; less common conditions live in [BoxFilterDialog]. */
+@Composable internal fun BoxFilterBar(filter: BoxFilter, warehouses: List<JSONObject>, change: (BoxFilter) -> Unit, more: () -> Unit) {
+    ActionRow {
+        ChipPicker(filter.status, BoxFilter.statuses, { change(filter.copy(status = it)) }, description = "状态筛选")
+        ChipPicker(filter.warehouseId, warehouseOptions(warehouses), { change(filter.copy(warehouseId = it)) }, description = "药箱筛选")
+        ChipPicker(filter.sort, BoxFilter.sorts, { change(filter.copy(sort = it)) }, description = "排序方式")
+        val extra = listOf(filter.productId, filter.expiry, filter.opened).count(String::isNotEmpty)
+        Action(if (extra > 0) "更多筛选 · $extra" else "更多筛选", secondary = true, onClick = more)
+    }
+}
+
+@Composable internal fun BoxFilterDialog(filter: BoxFilter, warehouses: List<JSONObject>, products: List<Product>,
+    change: (BoxFilter) -> Unit, dismiss: () -> Unit) {
+    Modal("筛选与排序药盒", dismiss) {
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            Picker("状态", filter.status, BoxFilter.statuses, { change(filter.copy(status = it)) }, modifier = Modifier.weight(1f))
+            Picker("药箱", filter.warehouseId, warehouseOptions(warehouses), { change(filter.copy(warehouseId = it)) }, modifier = Modifier.weight(1f))
+        }
+        Picker("药品", filter.productId, listOf("" to "全部药品") + products.map { it.id to it.name }, { change(filter.copy(productId = it)) })
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            Picker("有效期", filter.expiry, BoxFilter.expiries, { change(filter.copy(expiry = it)) }, modifier = Modifier.weight(1f))
+            Picker("开封", filter.opened, BoxFilter.openedStates, { change(filter.copy(opened = it)) }, modifier = Modifier.weight(1f))
+        }
+        Picker("排序", filter.sort, BoxFilter.sorts, { change(filter.copy(sort = it)) })
+        Text("筛选条件按家庭保存在本机，下次打开药箱仍然生效。", color = Muted, style = MaterialTheme.typography.bodySmall)
+        ActionRow {
+            Action("恢复默认", secondary = true, enabled = !filter.isDefault) { change(BoxFilter()) }
+            Action("完成", onClick = dismiss)
+        }
+    }
+}
+
+internal fun boxFilterSummary(filter: BoxFilter, shown: Int, total: Int, warehouses: List<JSONObject>, products: List<Product>): String {
+    fun label(options: List<Pair<String, String>>, value: String) = options.find { it.first == value }?.second
+    val parts = listOfNotNull(
+        filter.status.takeIf(String::isNotEmpty)?.let { label(BoxFilter.statuses, it) },
+        filter.warehouseId.takeIf(String::isNotEmpty)?.let { id -> warehouses.find { it.optString("id") == id }?.optString("name") },
+        filter.productId.takeIf(String::isNotEmpty)?.let { id -> products.find { it.id == id }?.name },
+        filter.expiry.takeIf(String::isNotEmpty)?.let { label(BoxFilter.expiries, it) },
+        filter.opened.takeIf(String::isNotEmpty)?.let { label(BoxFilter.openedStates, it) },
+    )
+    return (listOf("显示 $shown / $total 盒") + parts + "按${label(BoxFilter.sorts, filter.sort)}排序").joinToString(" · ")
 }
 
 fun movementLabel(type: String) = when (type) {

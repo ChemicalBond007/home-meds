@@ -2,48 +2,21 @@ package com.homemeds.app.net
 
 import com.homemeds.app.*
 import okhttp3.*
-import okhttp3.MediaType.Companion.toMediaType
-import okhttp3.RequestBody.Companion.toRequestBody
 import org.json.JSONObject
+import java.net.Proxy
 import java.net.InetAddress
 import java.net.UnknownHostException
 import java.util.concurrent.TimeUnit
 
-/** DNS and every redirect are checked. Credential-bearing requests never redirect. */
-class NativeHttp(private val session: AiSession, timeoutSeconds: Int) {
-    private val client = OkHttpClient.Builder().dns(object : Dns {
+/** Credential-free public pages only; DNS and every redirect are checked. */
+class NativeHttp(timeoutSeconds: Int) {
+    private val client = OkHttpClient.Builder().proxy(Proxy.NO_PROXY).dns(object : Dns {
         override fun lookup(hostname: String): List<InetAddress> = Dns.SYSTEM.lookup(hostname).also { addresses ->
             if (addresses.isEmpty() || addresses.any { !UrlPolicy.isPublicAddress(it) }) throw UnknownHostException("只允许访问公网地址")
         }
     }).followRedirects(false).followSslRedirects(false)
         .connectTimeout(15, TimeUnit.SECONDS).readTimeout(timeoutSeconds.toLong(), TimeUnit.SECONDS)
         .callTimeout(timeoutSeconds.toLong(), TimeUnit.SECONDS).build()
-
-    suspend fun <T> request(url: String, body: JSONObject? = null, service: String? = null, anthropic: Boolean = false,
-        block: suspend (Response) -> T): T {
-        if (session.expired) throw UserError("AI 会话已过期，请重新发送")
-        val target = UrlPolicy.publicUrl(url)
-        if (!target.isHttps) throw UserError("手机端只读取 HTTPS 网页")
-        val req = Request.Builder().url(target).header("Accept", "application/json").apply {
-            if (service != null) {
-                val key = KeyPolicy.resolve("hm-key:${session.id}:$service", target, session)
-                if (anthropic) { header("x-api-key", key); header("anthropic-version", "2023-06-01") }
-                else header("Authorization", "Bearer $key")
-            }
-            if (body != null) post(body.toString().toRequestBody("application/json".toMediaType()))
-        }.build()
-        return client.newCall(req).consume { response ->
-            if (!response.isSuccessful) throw ApiException(response.code, "AI 或搜索接口返回 ${response.code}")
-            block(response)
-        }
-    }
-
-    suspend fun json(url: String, body: JSONObject? = null, service: String? = null, anthropic: Boolean = false) =
-        request(url, body, service, anthropic) { response ->
-            val source = response.body.source()
-            if (source.request(2L * 1024 * 1024 + 1)) throw UserError("AI 响应超过 2MB 限制")
-            JSONObject(source.readUtf8())
-        }
 
     suspend fun page(raw: String): JSONObject {
         var url = raw

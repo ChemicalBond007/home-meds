@@ -383,11 +383,11 @@ class ApiClientTest {
         try {
             AiAgent.runChat(chatBody(), "g1", false, backend) { _, _ -> }
             fail("expected direct-session error")
-        } catch (e: UserError) { assertTrue(e.message!!.contains("手机直连")) }
+        } catch (e: UserError) { assertTrue(e.message!!.contains("AI 代理")) }
         try {
             AiAgent.runLookup("识图", "g1", false, image, backend) { _, _ -> }
             fail("expected direct-session error")
-        } catch (e: UserError) { assertTrue(e.message!!.contains("手机直连")) }
+        } catch (e: UserError) { assertTrue(e.message!!.contains("AI 代理")) }
     }
 
     @Test fun missingSearchCredentialsStillAllowVisiblePhotoDraft() = runBlocking {
@@ -460,6 +460,20 @@ class ApiClientTest {
         assertNull(backend.advertised.last())
         assertEquals(2, backend.remoteCalls.size)
         assertEquals(listOf("chat" to false), backend.closed)
+    }
+
+    @Test fun chatBuiltinSearchUsesASeparateQuotaBoundLookupSession() = runBlocking {
+        val backend = object : AgentBackend(calls("web_search" to json("query" to "测试药")), reply("请核对来源")) {
+            override suspend fun builtin(s: AiAgent.Opened, query: String): JSONObject {
+                assertEquals("lookup", s.id)
+                return json("content" to "公开说明书", "sources" to JSONArray().put(json("url" to source, "title" to "内置来源")))
+            }
+        }
+        backend.settings.put("search_mode", "builtin").put("max_llm_calls", 3)
+        AiAgent.runChat(chatBody(false), "g1", true, backend) { _, _ -> }
+        assertEquals(listOf("chat", "lookup"), backend.opened)
+        assertEquals(listOf("lookup" to true, "chat" to true), backend.closed)
+        assertTrue(backend.searchSessions.isEmpty())
     }
 
     @Test fun builtinSearchUsesThePrimarySessionAndCountsTowardLlmBudget() = runBlocking {

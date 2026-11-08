@@ -142,7 +142,7 @@ internal fun todoColor(state: String) = when (state) { "taken" -> Green; "skippe
         if (shown.isEmpty()) Panel { Text("今天没有定时服药项。按需服药请到吃药计划中记录。") }
         shown.forEach { todo ->
             TodoCard(todo, state.busy, record = { dose(DoseRequest(todo.plan, todo.date, todo.time)) }, skip = { skip = todo },
-                undo = { log -> vm.save("POST", "/doses/${log.id}/undo") },
+                undo = { log -> vm.save("POST", "/doses/${pathSegment(log.id)}/undo") },
                 speak = { speak("${todo.time}，${todo.plan.medicineName}，${Texts.amount(todo.plan.amount)}${todo.plan.unit}，${Texts.meal(todo.plan.mealRelation)}。${stateLabel(todo.state)}") })
         }
     }

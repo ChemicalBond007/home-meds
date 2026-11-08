@@ -119,7 +119,8 @@ class SpeechInputUiTest {
         compose.onNodeWithContentDescription("语音输入").assertIsNotEnabled()
         compose.runOnIdle {
             assertNull(results.permissionCode)
-            assertEquals(ComponentName("test.speech", "test.speech.Popup"), results.popupIntent!!.component)
+            assertNull(results.popupIntent!!.component)
+            assertNull(results.popupIntent!!.`package`)
             text += "继续键入"
             results.dispatchResult(results.popupCode!!, ActivityResult(Activity.RESULT_OK,
                 Intent().putStringArrayListExtra(RecognizerIntent.EXTRA_RESULTS, arrayListOf(" 语音结果 "))))
